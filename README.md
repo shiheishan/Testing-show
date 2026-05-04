@@ -13,6 +13,18 @@
 
 ## 配置
 
+运行时需要机器上已有 `sqlite3` 命令：
+
+```bash
+sqlite3 --version
+```
+
+Ubuntu/Debian 可安装：
+
+```bash
+sudo apt-get install sqlite3
+```
+
 复制主配置示例：
 
 ```bash
@@ -51,6 +63,57 @@ go run .
 ```
 
 默认监听 `http://0.0.0.0:8080`。Go 后端会托管 `dist/` 里的 React 构建产物。
+
+## 下载部署
+
+发布页会提供按系统和 CPU 架构打好的 `.tar.gz` 包，例如：
+
+```text
+vps-monitor_0.1.0_linux_amd64.tar.gz
+vps-monitor_0.1.0_linux_arm64.tar.gz
+vps-monitor_0.1.0_darwin_arm64.tar.gz
+```
+
+下载后解压：
+
+```bash
+tar -xzf vps-monitor_0.1.0_linux_amd64.tar.gz
+cd vps-monitor_0.1.0_linux_amd64
+cp config.yaml.example config.yaml
+cp subscriptions.yaml.example subscriptions.yaml
+./vps-monitor
+```
+
+然后访问 `http://服务器 IP:8080`。
+
+可选：Linux 服务器可以参考包内 `deploy/systemd/vps-monitor.service.example` 配置 systemd 常驻运行。默认示例假设程序解压到 `/opt/vps-monitor`，并使用 `vps-monitor` 用户运行。
+
+## 发布打包
+
+本地打包当前机器平台：
+
+```bash
+npm ci
+npm run package:release
+```
+
+交叉打包指定平台：
+
+```bash
+npm ci
+TARGET_OS=linux TARGET_ARCH=amd64 npm run package:release
+```
+
+产物会写到 `release/`，包括 `.tar.gz` 和对应的 `.sha256`。
+
+创建 GitHub Release：
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+推送 tag 后，GitHub Actions 会自动构建 Linux/macOS 的 amd64/arm64 tarball 并上传到 release。
 
 ## API
 

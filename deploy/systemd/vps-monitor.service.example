@@ -1,0 +1,17 @@
+[Unit]
+Description=VPS Node Monitor
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=vps-monitor
+Group=vps-monitor
+WorkingDirectory=/opt/vps-monitor
+ExecStart=/opt/vps-monitor/vps-monitor
+Restart=on-failure
+RestartSec=5
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+[Install]
+WantedBy=multi-user.target

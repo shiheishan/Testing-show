@@ -7,6 +7,7 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
+    "package:release": "scripts/package-release.sh",
     "preview": "vite preview"
   },
   "dependencies": {

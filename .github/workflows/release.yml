@@ -1,0 +1,137 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install runtime test dependency
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y sqlite3
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Validate tag matches VERSION
+        run: test "${GITHUB_REF_NAME#v}" = "$(tr -d '[:space:]' < VERSION)"
+
+      - name: Lint frontend
+        run: npm run lint
+
+      - name: Build frontend
+        run: npm run build
+
+      - name: Test backend
+        run: GOCACHE="$PWD/.gocache" go test .
+
+  build:
+    name: Build ${{ matrix.target.os }}-${{ matrix.target.arch }}
+    runs-on: ubuntu-latest
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - os: linux
+            arch: amd64
+          - os: linux
+            arch: arm64
+          - os: darwin
+            arch: amd64
+          - os: darwin
+            arch: arm64
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Validate tag matches VERSION
+        run: test "${GITHUB_REF_NAME#v}" = "$(tr -d '[:space:]' < VERSION)"
+
+      - name: Build release tarball
+        env:
+          TARGET_OS: ${{ matrix.target.os }}
+          TARGET_ARCH: ${{ matrix.target.arch }}
+        run: scripts/package-release.sh
+
+      - name: Upload package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: vps-monitor-${{ matrix.target.os }}-${{ matrix.target.arch }}
+          path: |
+            release/*.tar.gz
+            release/*.sha256
+          if-no-files-found: error
+
+  publish:
+    name: Publish GitHub release
+    runs-on: ubuntu-latest
+    needs: build
+
+    steps:
+      - name: Download package artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release
+          merge-multiple: true
+
+      - name: Create release notes
+        run: |
+          {
+            echo "## vps-monitor ${GITHUB_REF_NAME#v}"
+            echo
+            echo "Download the tarball for your OS and CPU architecture, verify the sha256 file, then follow QUICKSTART.md."
+            echo
+            echo "Runtime requirement: sqlite3 must be available in PATH."
+          } > release/RELEASE_NOTES.md
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            release/*.tar.gz \
+            release/*.sha256 \
+            --verify-tag \
+            --title "$GITHUB_REF_NAME" \
+            --notes-file release/RELEASE_NOTES.md
