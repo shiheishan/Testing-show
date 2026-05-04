@@ -1,0 +1,24 @@
+proxies:
+  - name: 香港 01
+    type: vmess
+    server: hk.example.com
+    port: 443
+    uuid: 123e4567-e89b-12d3-a456-426614174000
+    network: ws
+    tls: true
+    host: hk.example.com
+  - name: 日本 02
+    type: trojan
+    server: jp.example.com
+    port: 443
+    password: secret-password
+    sni: jp.example.com
+  - name: 新加坡 Hysteria
+    type: hysteria
+    server: sg.example.com
+    port: 8443
+    auth-str: hysteria-secret
+    obfs: salamander
+    up: 100
+    down: 200
+    sni: sg.example.com

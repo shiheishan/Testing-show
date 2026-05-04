@@ -1,0 +1,24 @@
+server:
+  host: 0.0.0.0
+  port: 8080
+
+db:
+  path: ./data/nodes.db
+
+check:
+  # 部署机器本地每 30 秒检测一轮节点 TCP 延迟。
+  interval: 30s
+  concurrency: 50
+  timeout: 5s
+  retention: 24h
+  # 客户连续点击测速时，冷却期内直接复用最近结果。
+  manual_cooldown: 15s
+
+subscription:
+  # 订阅链接单独放在根目录 subscriptions.yaml。
+  config_path: subscriptions.yaml
+  user_agent: ClashVerge
+  timeout: 10s
+  refresh_interval: 5m
+  # 订阅拉取代理，用于访问被墙的订阅链接。
+  # proxy: http://127.0.0.1:7890
