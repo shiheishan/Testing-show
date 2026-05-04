@@ -1,0 +1,3 @@
+subscriptions:
+  - name: sample-clash
+    url: file:///ABSOLUTE/PATH/TO/samples/sample-clash.yaml

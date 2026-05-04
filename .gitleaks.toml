@@ -1,0 +1,11 @@
+title = "vps-monitor gitleaks config"
+
+[allowlist]
+description = "Ignore test fixtures and sample subscriptions with intentionally fake credentials."
+paths = [
+  '''parser_test\.go$''',
+  '''server_test\.go$''',
+  '''service_test\.go$''',
+  '''samples/sample-clash\.yaml$''',
+  '''subscriptions\.yaml\.example$''',
+]
