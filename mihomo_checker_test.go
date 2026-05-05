@@ -163,6 +163,37 @@ func TestUnavailableProxyDelayRunnerReportsReason(t *testing.T) {
 	}
 }
 
+func TestNewProxyDelayRunnerUsesProxyCheckSettings(t *testing.T) {
+	runner := NewProxyDelayRunner(Config{
+		ProxyCheckEnabled:     true,
+		ProxyCheckURL:         "https://example.com/generate_204",
+		ProxyCheckConcurrency: 3,
+		ProxyCheckWarmup:      false,
+		MihomoPath:            "/opt/mihomo",
+		MihomoStartTimeout:    2 * time.Second,
+	})
+
+	got, ok := runner.(*MihomoDelayRunner)
+	if !ok {
+		t.Fatalf("runner type = %T, want *MihomoDelayRunner", runner)
+	}
+	if got.concurrency != 3 {
+		t.Fatalf("concurrency = %d, want 3", got.concurrency)
+	}
+	if got.warmup {
+		t.Fatal("warmup = true, want false")
+	}
+	if got.delayURL != "https://example.com/generate_204" {
+		t.Fatalf("delayURL = %q", got.delayURL)
+	}
+	if got.path != "/opt/mihomo" {
+		t.Fatalf("path = %q", got.path)
+	}
+	if got.startTimeout != 2*time.Second {
+		t.Fatalf("startTimeout = %v, want 2s", got.startTimeout)
+	}
+}
+
 func TestProbeMihomoDelayIncludesErrorBody(t *testing.T) {
 	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		return &http.Response{
