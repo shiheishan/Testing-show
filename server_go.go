@@ -45,11 +45,17 @@ func (c *ResultCache) UpdateMany(results []CheckResult) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	for _, result := range results {
-		c.items[result.NodeID] = CheckState{
-			Status:      result.Status,
-			LatencyMS:   result.LatencyMS,
-			LastChecked: result.CheckedAt,
-		}
+		c.items[result.NodeID] = normalizeCheckState(CheckState{
+			Status:             result.Status,
+			LatencyMS:          result.LatencyMS,
+			TransportStatus:    result.TransportStatus,
+			TransportLatencyMS: result.TransportLatencyMS,
+			ProxyStatus:        result.ProxyStatus,
+			ProxyLatencyMS:     result.ProxyLatencyMS,
+			StatusSource:       result.StatusSource,
+			StatusMessage:      result.StatusMessage,
+			LastChecked:        result.CheckedAt,
+		})
 	}
 }
 
@@ -331,6 +337,7 @@ type CheckService struct {
 	store         *Store
 	cache         *ResultCache
 	config        Config
+	proxyRunner   ProxyDelayRunner
 	mu            sync.Mutex
 	active        bool
 	lastManualRun map[string]time.Time
@@ -341,6 +348,7 @@ func NewCheckService(store *Store, cache *ResultCache, config Config) *CheckServ
 		store:         store,
 		cache:         cache,
 		config:        config,
+		proxyRunner:   NewProxyDelayRunner(config),
 		lastManualRun: map[string]time.Time{},
 	}
 }
@@ -348,6 +356,16 @@ func NewCheckService(store *Store, cache *ResultCache, config Config) *CheckServ
 type CheckStartResult struct {
 	Total  int
 	Status string
+}
+
+type ProbeResult struct {
+	Status    string
+	LatencyMS *int
+	Message   string
+}
+
+type ProxyDelayRunner interface {
+	Check(nodes []NodeRecord, timeout time.Duration) (map[int]ProbeResult, error)
 }
 
 func (s *CheckService) StartAsyncCheck(subscriptionID *int, nodeID *int) (CheckStartResult, error) {
@@ -418,8 +436,22 @@ func (s *CheckService) RunCheck(subscriptionID *int, nodeID *int) ([]CheckResult
 	if len(nodes) == 0 {
 		return nil, nil
 	}
+	proxyResults := map[int]ProbeResult{}
+	proxyErrMessage := ""
+	if s.proxyRunner != nil {
+		items, err := s.proxyRunner.Check(nodes, s.config.CheckTimeout)
+		if err != nil {
+			proxyErrMessage = err.Error()
+		} else {
+			proxyResults = items
+		}
+	}
+
 	sem := make(chan struct{}, s.config.CheckConcurrency)
-	results := make(chan CheckResult, len(nodes))
+	transportResults := make(chan struct {
+		node   NodeRecord
+		result ProbeResult
+	}, len(nodes))
 	var wg sync.WaitGroup
 
 	for _, node := range nodes {
@@ -429,16 +461,26 @@ func (s *CheckService) RunCheck(subscriptionID *int, nodeID *int) ([]CheckResult
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			results <- s.checkNode(node)
+			transportResults <- struct {
+				node   NodeRecord
+				result ProbeResult
+			}{node: node, result: s.checkTransport(node)}
 		}()
 	}
 
 	wg.Wait()
-	close(results)
+	close(transportResults)
 
 	items := make([]CheckResult, 0, len(nodes))
-	for item := range results {
-		items = append(items, item)
+	for item := range transportResults {
+		proxyResult, ok := proxyResults[item.node.ID]
+		if !ok {
+			proxyResult = ProbeResult{Status: "unknown"}
+			if proxyErrMessage != "" {
+				proxyResult.Message = proxyErrMessage
+			}
+		}
+		items = append(items, combineProbeResults(item.node.ID, item.result, proxyResult, time.Now().UTC().Format(time.RFC3339)))
 	}
 	if err := s.store.InsertCheckResults(items, s.config.CheckRetention); err != nil {
 		return nil, err
@@ -447,21 +489,54 @@ func (s *CheckService) RunCheck(subscriptionID *int, nodeID *int) ([]CheckResult
 	return items, nil
 }
 
-func (s *CheckService) checkNode(node NodeRecord) CheckResult {
-	checkedAt := time.Now().UTC().Format(time.RFC3339)
+func (s *CheckService) checkTransport(node NodeRecord) ProbeResult {
 	started := time.Now()
 	address := netJoinHostPort(node.Server, strconv.Itoa(node.Port))
 	connection, err := netDialTimeout("tcp", address, s.config.CheckTimeout)
 	if err == nil {
 		_ = connection.Close()
 		latency := int(time.Since(started).Milliseconds())
-		return CheckResult{NodeID: node.ID, Status: "online", LatencyMS: &latency, CheckedAt: checkedAt}
+		return ProbeResult{Status: "online", LatencyMS: &latency}
 	}
 	status := "offline"
 	if isTimeoutError(err) {
 		status = "timeout"
 	}
-	return CheckResult{NodeID: node.ID, Status: status, CheckedAt: checkedAt}
+	return ProbeResult{Status: status, Message: err.Error()}
+}
+
+func combineProbeResults(nodeID int, transport ProbeResult, proxy ProbeResult, checkedAt string) CheckResult {
+	transport.Status = normalizeCheckStatus(transport.Status)
+	proxy.Status = normalizeCheckStatus(proxy.Status)
+	status := transport.Status
+	latency := transport.LatencyMS
+	source := "transport"
+	message := transport.Message
+	if proxy.Status != "unknown" {
+		status = proxy.Status
+		latency = proxy.LatencyMS
+		source = "proxy"
+		message = proxy.Message
+	} else if strings.TrimSpace(proxy.Message) != "" {
+		message = proxy.Message
+	}
+	var messagePtr *string
+	if strings.TrimSpace(message) != "" {
+		clean := strings.TrimSpace(message)
+		messagePtr = &clean
+	}
+	return CheckResult{
+		NodeID:             nodeID,
+		Status:             status,
+		LatencyMS:          latency,
+		TransportStatus:    transport.Status,
+		TransportLatencyMS: transport.LatencyMS,
+		ProxyStatus:        proxy.Status,
+		ProxyLatencyMS:     proxy.LatencyMS,
+		StatusSource:       source,
+		StatusMessage:      messagePtr,
+		CheckedAt:          checkedAt,
+	}
 }
 
 type Scheduler struct {
@@ -571,7 +646,9 @@ func NewServer(deps ServerDeps) http.Handler {
 			status := "unknown"
 			var latency *int
 			var lastChecked *string
-			if state, ok := deps.Cache.Get(node.ID); ok {
+			state := normalizeCheckState(CheckState{})
+			if cached, ok := deps.Cache.Get(node.ID); ok {
+				state = cached
 				status = state.Status
 				latency = state.LatencyMS
 				lastChecked = &state.LastChecked
@@ -580,16 +657,23 @@ func NewServer(deps ServerDeps) http.Handler {
 				}
 			}
 			responseNodes = append(responseNodes, map[string]any{
-				"id":              node.ID,
-				"subscription_id": node.SubscriptionID,
-				"name":            node.Name,
-				"server":          node.Server,
-				"port":            node.Port,
-				"protocol":        node.Protocol,
-				"status":          status,
-				"latency_ms":      latency,
-				"last_checked":    lastChecked,
-				"stale_since":     node.StaleSince,
+				"id":                   node.ID,
+				"subscription_id":      node.SubscriptionID,
+				"display_order":        node.DisplayOrder,
+				"name":                 node.Name,
+				"server":               node.Server,
+				"port":                 node.Port,
+				"protocol":             node.Protocol,
+				"status":               status,
+				"latency_ms":           latency,
+				"transport_status":     state.TransportStatus,
+				"transport_latency_ms": state.TransportLatencyMS,
+				"proxy_status":         state.ProxyStatus,
+				"proxy_latency_ms":     state.ProxyLatencyMS,
+				"status_source":        state.StatusSource,
+				"status_message":       state.StatusMessage,
+				"last_checked":         lastChecked,
+				"stale_since":          node.StaleSince,
 			})
 		}
 		writeJSON(w, http.StatusOK, map[string]any{

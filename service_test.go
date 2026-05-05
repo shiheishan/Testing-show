@@ -215,6 +215,124 @@ func TestLoadSubscriptionNodesDocumentationLinksDoNotInventSkippedEntries(t *tes
 	}
 }
 
+func TestUpsertNodesPreservesSubscriptionOrder(t *testing.T) {
+	store, err := NewStore(filepath.Join(t.TempDir(), "nodes.db"))
+	if err != nil {
+		t.Fatalf("NewStore error: %v", err)
+	}
+	subscription, err := store.CreateSubscription("order", "file:///tmp/order.yaml")
+	if err != nil {
+		t.Fatalf("CreateSubscription error: %v", err)
+	}
+
+	first := []ParsedNode{
+		{Name: "Charlie", Server: "charlie.example.com", Port: 443, Protocol: "trojan", ExtraParams: map[string]any{"password": "secret"}},
+		{Name: "Alpha", Server: "alpha.example.com", Port: 443, Protocol: "trojan", ExtraParams: map[string]any{"password": "secret"}},
+		{Name: "Bravo", Server: "bravo.example.com", Port: 443, Protocol: "trojan", ExtraParams: map[string]any{"password": "secret"}},
+	}
+	if _, err := store.UpsertNodes(subscription.ID, first); err != nil {
+		t.Fatalf("UpsertNodes first error: %v", err)
+	}
+	nodes, err := store.ListNodes(&subscription.ID, false)
+	if err != nil {
+		t.Fatalf("ListNodes first error: %v", err)
+	}
+	assertNodeOrder(t, nodes, []string{"Charlie", "Alpha", "Bravo"})
+
+	second := []ParsedNode{first[2], first[0], first[1]}
+	if _, err := store.UpsertNodes(subscription.ID, second); err != nil {
+		t.Fatalf("UpsertNodes second error: %v", err)
+	}
+	nodes, err = store.ListNodes(&subscription.ID, false)
+	if err != nil {
+		t.Fatalf("ListNodes second error: %v", err)
+	}
+	assertNodeOrder(t, nodes, []string{"Bravo", "Charlie", "Alpha"})
+	for index, node := range nodes {
+		if node.DisplayOrder != index {
+			t.Fatalf("node %s display_order = %d, want %d", node.Name, node.DisplayOrder, index)
+		}
+	}
+}
+
+func TestStoreMigratesDisplayOrderBeforeCreatingOrderIndex(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "legacy.db")
+	legacy := &Store{dbPath: dbPath}
+	if err := legacy.execSQL(`
+CREATE TABLE subscriptions (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	name TEXT NOT NULL,
+	url TEXT NOT NULL UNIQUE,
+	created_at TEXT NOT NULL,
+	last_refreshed_at TEXT,
+	last_error TEXT
+);
+CREATE TABLE nodes (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	subscription_id INTEGER NOT NULL,
+	name TEXT NOT NULL,
+	server TEXT NOT NULL,
+	port INTEGER NOT NULL,
+	protocol TEXT NOT NULL,
+	extra_params TEXT NOT NULL DEFAULT '{}',
+	stale_since TEXT,
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL,
+	FOREIGN KEY (subscription_id) REFERENCES subscriptions(id) ON DELETE CASCADE
+);
+CREATE TABLE check_results (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	node_id INTEGER NOT NULL,
+	status TEXT NOT NULL,
+	latency_ms INTEGER,
+	checked_at TEXT NOT NULL,
+	FOREIGN KEY (node_id) REFERENCES nodes(id) ON DELETE CASCADE
+);
+INSERT INTO subscriptions (id, name, url, created_at) VALUES (1, 'legacy', 'file:///tmp/legacy.yaml', '2026-01-01T00:00:00Z');
+INSERT INTO nodes (id, subscription_id, name, server, port, protocol, extra_params, created_at, updated_at)
+VALUES (7, 1, 'Legacy', 'legacy.example.com', 443, 'trojan', '{}', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z');
+`); err != nil {
+		t.Fatalf("create legacy schema error: %v", err)
+	}
+
+	store, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore migration error: %v", err)
+	}
+	nodes, err := store.ListNodes(nil, false)
+	if err != nil {
+		t.Fatalf("ListNodes error: %v", err)
+	}
+	if len(nodes) != 1 || nodes[0].DisplayOrder != 7 {
+		t.Fatalf("unexpected migrated nodes: %+v", nodes)
+	}
+
+	var indexes []struct {
+		Name string `json:"name"`
+	}
+	if err := store.queryJSON(&indexes, `PRAGMA index_list(nodes);`); err != nil {
+		t.Fatalf("index list error: %v", err)
+	}
+	for _, index := range indexes {
+		if index.Name == "idx_nodes_subscription_order" {
+			return
+		}
+	}
+	t.Fatalf("idx_nodes_subscription_order was not created: %+v", indexes)
+}
+
+func assertNodeOrder(t *testing.T, nodes []NodeRecord, want []string) {
+	t.Helper()
+	if len(nodes) != len(want) {
+		t.Fatalf("nodes = %d, want %d", len(nodes), len(want))
+	}
+	for index, name := range want {
+		if nodes[index].Name != name {
+			t.Fatalf("node %d = %q, want %q; got %+v", index, nodes[index].Name, name, nodes)
+		}
+	}
+}
+
 func TestDeleteSubscriptionRemovesNodes(t *testing.T) {
 	store, service := newTestSubscriptionService(t)
 
@@ -591,6 +709,135 @@ func TestStartAsyncCheckUsesManualCooldown(t *testing.T) {
 	if second.Status != "cached" {
 		t.Fatalf("second status = %q, want cached", second.Status)
 	}
+}
+
+func TestRunCheckUsesProxyStatusAsPrimaryWhenTransportTimesOut(t *testing.T) {
+	store, service := newTestSubscriptionService(t)
+
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd error: %v", err)
+	}
+	fileURL := (&url.URL{
+		Scheme: "file",
+		Path:   filepath.Join(wd, "samples", "sample-clash.yaml"),
+	}).String()
+	if err := service.SyncConfiguredSubscriptions([]ConfiguredSubscription{{Name: "sample", URL: fileURL}}); err != nil {
+		t.Fatalf("SyncConfiguredSubscriptions error: %v", err)
+	}
+	nodes, err := store.ListNodes(nil, false)
+	if err != nil {
+		t.Fatalf("ListNodes error: %v", err)
+	}
+	if len(nodes) == 0 {
+		t.Fatal("expected sample nodes")
+	}
+
+	cache := NewResultCache()
+	checkService := NewCheckService(store, cache, service.config)
+	proxyLatency := 123
+	checkService.proxyRunner = stubProxyRunner{
+		results: map[int]ProbeResult{
+			nodes[0].ID: {Status: "online", LatencyMS: &proxyLatency},
+		},
+	}
+
+	originalDial := netDialTimeout
+	netDialTimeout = func(network, address string, timeout time.Duration) (net.Conn, error) {
+		return nil, timeoutStubError{}
+	}
+	defer func() {
+		netDialTimeout = originalDial
+	}()
+
+	results, err := checkService.RunCheck(nil, &nodes[0].ID)
+	if err != nil {
+		t.Fatalf("RunCheck error: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("results = %d, want 1", len(results))
+	}
+	got := results[0]
+	if got.Status != "online" || got.StatusSource != "proxy" {
+		t.Fatalf("status/source = %s/%s, want online/proxy", got.Status, got.StatusSource)
+	}
+	if got.LatencyMS == nil || *got.LatencyMS != proxyLatency {
+		t.Fatalf("latency = %v, want %d", got.LatencyMS, proxyLatency)
+	}
+	if got.TransportStatus != "timeout" {
+		t.Fatalf("transport status = %s, want timeout", got.TransportStatus)
+	}
+
+	state, ok := cache.Get(nodes[0].ID)
+	if !ok {
+		t.Fatal("expected cache state")
+	}
+	if state.Status != "online" || state.TransportStatus != "timeout" || state.ProxyStatus != "online" {
+		t.Fatalf("unexpected cached state: %+v", state)
+	}
+}
+
+func TestRunCheckFallsBackToTransportWhenProxyIsUnknown(t *testing.T) {
+	store, service := newTestSubscriptionService(t)
+
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd error: %v", err)
+	}
+	fileURL := (&url.URL{
+		Scheme: "file",
+		Path:   filepath.Join(wd, "samples", "sample-clash.yaml"),
+	}).String()
+	if err := service.SyncConfiguredSubscriptions([]ConfiguredSubscription{{Name: "sample", URL: fileURL}}); err != nil {
+		t.Fatalf("SyncConfiguredSubscriptions error: %v", err)
+	}
+	nodes, err := store.ListNodes(nil, false)
+	if err != nil {
+		t.Fatalf("ListNodes error: %v", err)
+	}
+	if len(nodes) == 0 {
+		t.Fatal("expected sample nodes")
+	}
+
+	cache := NewResultCache()
+	checkService := NewCheckService(store, cache, service.config)
+	checkService.proxyRunner = stubProxyRunner{
+		results: map[int]ProbeResult{
+			nodes[0].ID: {Status: "unknown", Message: "mihomo unavailable"},
+		},
+	}
+
+	originalDial := netDialTimeout
+	netDialTimeout = func(network, address string, timeout time.Duration) (net.Conn, error) {
+		return nil, timeoutStubError{}
+	}
+	defer func() {
+		netDialTimeout = originalDial
+	}()
+
+	results, err := checkService.RunCheck(nil, &nodes[0].ID)
+	if err != nil {
+		t.Fatalf("RunCheck error: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("results = %d, want 1", len(results))
+	}
+	got := results[0]
+	if got.Status != "timeout" || got.StatusSource != "transport" {
+		t.Fatalf("status/source = %s/%s, want timeout/transport", got.Status, got.StatusSource)
+	}
+	if got.ProxyStatus != "unknown" {
+		t.Fatalf("proxy status = %s, want unknown", got.ProxyStatus)
+	}
+}
+
+type stubProxyRunner struct {
+	results map[int]ProbeResult
+	err     error
+}
+
+func (r stubProxyRunner) Check(nodes []NodeRecord, timeout time.Duration) (map[int]ProbeResult, error) {
+	return r.results, r.err
 }
 
 type timeoutStubError struct{}

@@ -6,13 +6,19 @@ db:
   path: ./data/nodes.db
 
 check:
-  # 部署机器本地每 30 秒检测一轮节点 TCP 延迟。
+  # 部署机器本地每 30 秒检测一轮节点。
   interval: 30s
   concurrency: 50
   timeout: 5s
   retention: 24h
   # 客户连续点击测速时，冷却期内直接复用最近结果。
   manual_cooldown: 15s
+  # TCP 探活只做入口诊断；如果机器上能找到 mihomo，则用真实代理 delay 作为主状态。
+  proxy_enabled: true
+  proxy_url: https://www.gstatic.com/generate_204
+  # 留空时自动查找 mihomo / clash-meta / clash。
+  # mihomo_path: /usr/local/bin/mihomo
+  mihomo_start_timeout: 8s
 
 subscription:
   # 订阅链接单独放在根目录 subscriptions.yaml。
