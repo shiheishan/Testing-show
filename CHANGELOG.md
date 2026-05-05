@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.2] - 2026-05-05
+
+### Fixed
+
+- Preserved Hysteria2 port-hopping options when converting subscription nodes for Mihomo real proxy checks.
+- Added transport failure details to proxy-offline status messages so VPS network reachability problems are visible in node diagnostics.
+
 ## [0.2.1] - 2026-05-05
 
 ### Changed

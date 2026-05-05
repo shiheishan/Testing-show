@@ -517,6 +517,9 @@ func combineProbeResults(nodeID int, transport ProbeResult, proxy ProbeResult, c
 		latency = proxy.LatencyMS
 		source = "proxy"
 		message = proxy.Message
+		if proxy.Status != "online" && strings.TrimSpace(transport.Message) != "" {
+			message = combineStatusMessages(proxy.Message, fmt.Sprintf("入口探活: %s", transport.Message))
+		}
 	} else if strings.TrimSpace(proxy.Message) != "" {
 		message = proxy.Message
 	}
@@ -537,6 +540,18 @@ func combineProbeResults(nodeID int, transport ProbeResult, proxy ProbeResult, c
 		StatusMessage:      messagePtr,
 		CheckedAt:          checkedAt,
 	}
+}
+
+func combineStatusMessages(primary string, secondary string) string {
+	primary = strings.TrimSpace(primary)
+	secondary = strings.TrimSpace(secondary)
+	if primary == "" {
+		return secondary
+	}
+	if secondary == "" || strings.Contains(primary, secondary) {
+		return primary
+	}
+	return primary + "；" + secondary
 }
 
 type Scheduler struct {

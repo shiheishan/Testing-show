@@ -479,6 +479,8 @@ func nodeToMihomoProxy(node NodeRecord) (map[string]any, error) {
 		copyFirst(proxy, "obfs", extras, "obfs")
 		copyFirst(proxy, "obfs-password", extras, "obfs_password")
 		copyFirst(proxy, "sni", extras, "sni")
+		copyFirst(proxy, "ports", extras, "ports")
+		copyFirst(proxy, "hop-interval", extras, "hop_interval")
 	case "tuic":
 		copyFirst(proxy, "uuid", extras, "uuid")
 		copyFirst(proxy, "password", extras, "password")

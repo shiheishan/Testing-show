@@ -151,6 +151,63 @@ func TestNodeToMihomoProxyMapsHy2Alias(t *testing.T) {
 	}
 }
 
+func TestNodeToMihomoProxyPreservesHy2PortHopping(t *testing.T) {
+	node := NodeRecord{
+		ID:       8,
+		Name:     "HY2 Hopping",
+		Server:   "hy2.example.com",
+		Port:     50000,
+		Protocol: "hy2",
+		ExtraParams: map[string]any{
+			"password":      "secret",
+			"ports":         "50000-51000",
+			"hop_interval":  60,
+			"obfs":          "salamander",
+			"obfs_password": "obfs-secret",
+		},
+	}
+
+	proxy, err := nodeToMihomoProxy(node)
+	if err != nil {
+		t.Fatalf("nodeToMihomoProxy error: %v", err)
+	}
+	if proxy["ports"] != "50000-51000" {
+		t.Fatalf("ports = %v, want 50000-51000; proxy = %+v", proxy["ports"], proxy)
+	}
+	if proxy["hop-interval"] != 60 {
+		t.Fatalf("hop-interval = %v, want 60; proxy = %+v", proxy["hop-interval"], proxy)
+	}
+	if proxy["obfs-password"] != "obfs-secret" {
+		t.Fatalf("obfs-password = %v, want obfs-secret", proxy["obfs-password"])
+	}
+}
+
+func TestNodeToMihomoProxyDoesNotLeakHy2PortHoppingToOtherProtocols(t *testing.T) {
+	node := NodeRecord{
+		ID:       9,
+		Name:     "AnyTLS",
+		Server:   "anytls.example.com",
+		Port:     443,
+		Protocol: "anytls",
+		ExtraParams: map[string]any{
+			"password":     "secret",
+			"ports":        "50000-51000",
+			"hop_interval": 60,
+		},
+	}
+
+	proxy, err := nodeToMihomoProxy(node)
+	if err != nil {
+		t.Fatalf("nodeToMihomoProxy error: %v", err)
+	}
+	if _, ok := proxy["ports"]; ok {
+		t.Fatalf("unexpected ports on anytls proxy: %+v", proxy)
+	}
+	if _, ok := proxy["hop-interval"]; ok {
+		t.Fatalf("unexpected hop-interval on anytls proxy: %+v", proxy)
+	}
+}
+
 func TestUnavailableProxyDelayRunnerReportsReason(t *testing.T) {
 	runner := unavailableProxyDelayRunner{message: "missing mihomo"}
 	results, err := runner.Check([]NodeRecord{{ID: 1}}, 0)

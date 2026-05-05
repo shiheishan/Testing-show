@@ -777,6 +777,63 @@ func TestRunCheckUsesProxyStatusAsPrimaryWhenTransportTimesOut(t *testing.T) {
 	}
 }
 
+func TestRunCheckIncludesTransportFailureWhenProxyFails(t *testing.T) {
+	store, service := newTestSubscriptionService(t)
+
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd error: %v", err)
+	}
+	fileURL := (&url.URL{
+		Scheme: "file",
+		Path:   filepath.Join(wd, "samples", "sample-clash.yaml"),
+	}).String()
+	if err := service.SyncConfiguredSubscriptions([]ConfiguredSubscription{{Name: "sample", URL: fileURL}}); err != nil {
+		t.Fatalf("SyncConfiguredSubscriptions error: %v", err)
+	}
+	nodes, err := store.ListNodes(nil, false)
+	if err != nil {
+		t.Fatalf("ListNodes error: %v", err)
+	}
+	if len(nodes) == 0 {
+		t.Fatal("expected sample nodes")
+	}
+
+	cache := NewResultCache()
+	checkService := NewCheckService(store, cache, service.config)
+	checkService.proxyRunner = stubProxyRunner{
+		results: map[int]ProbeResult{
+			nodes[0].ID: {Status: "offline", Message: "503 Service Unavailable: delay failed"},
+		},
+	}
+
+	originalDial := netDialTimeout
+	netDialTimeout = func(network, address string, timeout time.Duration) (net.Conn, error) {
+		return nil, timeoutStubError{}
+	}
+	defer func() {
+		netDialTimeout = originalDial
+	}()
+
+	results, err := checkService.RunCheck(nil, &nodes[0].ID)
+	if err != nil {
+		t.Fatalf("RunCheck error: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("results = %d, want 1", len(results))
+	}
+	got := results[0]
+	if got.Status != "offline" || got.StatusSource != "proxy" {
+		t.Fatalf("status/source = %s/%s, want offline/proxy", got.Status, got.StatusSource)
+	}
+	if got.StatusMessage == nil {
+		t.Fatal("expected status message")
+	}
+	if !strings.Contains(*got.StatusMessage, "delay failed") || !strings.Contains(*got.StatusMessage, "入口探活") || !strings.Contains(*got.StatusMessage, "timeout") {
+		t.Fatalf("message = %q, want proxy and transport failure detail", *got.StatusMessage)
+	}
+}
+
 func TestRunCheckFallsBackToTransportWhenProxyIsUnknown(t *testing.T) {
 	store, service := newTestSubscriptionService(t)
 
