@@ -17,6 +17,7 @@ import {
 
 type NodeStatus = "online" | "offline" | "timeout" | "unknown";
 type SubscriptionStatus = "ok" | "failed";
+type StatusSource = "proxy" | "transport";
 
 interface Subscription {
   id: number;
@@ -31,12 +32,19 @@ interface Subscription {
 interface NodeRecord {
   id: number;
   subscription_id: number;
+  display_order: number;
   name: string;
   server: string;
   port: number;
   protocol: string;
   status: NodeStatus;
   latency_ms: number | null;
+  transport_status: NodeStatus;
+  transport_latency_ms: number | null;
+  proxy_status: NodeStatus;
+  proxy_latency_ms: number | null;
+  status_source: StatusSource;
+  status_message: string | null;
   last_checked: string | null;
   stale_since: string | null;
 }
@@ -57,6 +65,12 @@ interface CheckResponse {
 interface CheckHistoryPoint {
   status: NodeStatus;
   latency_ms: number | null;
+  transport_status: NodeStatus;
+  transport_latency_ms: number | null;
+  proxy_status: NodeStatus;
+  proxy_latency_ms: number | null;
+  status_source: StatusSource;
+  status_message: string | null;
   checked_at: string;
 }
 
@@ -103,9 +117,9 @@ const statusConfig: Record<NodeStatus, {
 };
 
 const sortLabels = {
+  default: "默认",
   latency: "延迟",
   name: "名称",
-  status: "状态",
 } as const;
 
 const filterLabels = {
@@ -115,6 +129,13 @@ const filterLabels = {
   timeout: "超时",
   unknown: "未知",
 } as const;
+
+const historyStatusConfig: Record<NodeStatus, { color: string; label: string }> = {
+  online: { color: "#38bdf8", label: "在线" },
+  offline: { color: "#f87171", label: "离线" },
+  timeout: { color: "#fbbf24", label: "超时" },
+  unknown: { color: "rgba(255,255,255,0.32)", label: "未知" },
+};
 
 async function apiRequest<T>(path: string, options: RequestInit = {}): Promise<T> {
   const response = await fetch(path, {
@@ -133,6 +154,24 @@ function normalizeNodeStatus(value: string | null | undefined): NodeStatus {
     return value;
   }
   return "unknown";
+}
+
+function normalizeStatusSource(value: string | null | undefined): StatusSource {
+  return value === "proxy" ? "proxy" : "transport";
+}
+
+function normalizeNodeRecord(node: NodeRecord): NodeRecord {
+  return {
+    ...node,
+    display_order: node.display_order ?? node.id,
+    status: normalizeNodeStatus(node.status),
+    transport_status: normalizeNodeStatus(node.transport_status),
+    transport_latency_ms: node.transport_latency_ms ?? null,
+    proxy_status: normalizeNodeStatus(node.proxy_status),
+    proxy_latency_ms: node.proxy_latency_ms ?? null,
+    status_source: normalizeStatusSource(node.status_source),
+    status_message: node.status_message ?? null,
+  };
 }
 
 function latencySortValue(latency: number | null): number {
@@ -332,7 +371,7 @@ const SearchBox = memo(function SearchBox({
   return (
     <div
       className={`liquid-glass rounded-xl flex items-center gap-2 transition-all duration-300 ease-[cubic-bezier(0.4,0,0.2,1)] overflow-hidden ${
-        focused ? "px-4 py-2 w-[220px]" : "px-2 py-2 w-9 cursor-pointer"
+        focused ? "px-4 py-2 w-full sm:w-[220px]" : "px-2 py-2 w-9 cursor-pointer"
       }`}
       onClick={handleClick}
     >
@@ -368,7 +407,7 @@ export default function VPSMonitorPage() {
   const [testingAll, setTestingAll] = useState(false);
   const [testingNodeId, setTestingNodeId] = useState<number | null>(null);
   const [detailNode, setDetailNode] = useState<NodeRecord | null>(null);
-  const [sortBy, setSortBy] = useState<"latency" | "name" | "status">("latency");
+  const [sortBy, setSortBy] = useState<"default" | "latency" | "name">("default");
   const [filterStatus, setFilterStatus] = useState<"all" | NodeStatus>("all");
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedSubscriptionId, setSelectedSubscriptionId] = useState<number | null>(null);
@@ -398,7 +437,7 @@ export default function VPSMonitorPage() {
       ) {
         setSelectedSubscriptionId(null);
       }
-      setNodes(nodePayload.nodes.map((node) => ({ ...node, status: normalizeNodeStatus(node.status) })));
+      setNodes(nodePayload.nodes.map(normalizeNodeRecord));
       setStats(statsPayload);
       setStatusMessage(subscriptionPayload.subscriptions.length ? "状态板已同步" : "暂无配置订阅");
     } catch (error) {
@@ -430,6 +469,13 @@ export default function VPSMonitorPage() {
     });
 
     return [...filtered].sort((left, right) => {
+      if (sortBy === "default") {
+        const subscriptionDiff = left.subscription_id - right.subscription_id;
+        if (subscriptionDiff !== 0) return subscriptionDiff;
+        const orderDiff = left.display_order - right.display_order;
+        if (orderDiff !== 0) return orderDiff;
+        return left.id - right.id;
+      }
       if (sortBy === "latency") {
         const diff = latencySortValue(left.latency_ms) - latencySortValue(right.latency_ms);
         if (diff !== 0) return diff;
@@ -438,10 +484,7 @@ export default function VPSMonitorPage() {
       if (sortBy === "name") {
         return left.name.localeCompare(right.name, "zh-CN");
       }
-      const order: Record<NodeStatus, number> = { online: 0, timeout: 1, offline: 2, unknown: 3 };
-      const diff = order[left.status] - order[right.status];
-      if (diff !== 0) return diff;
-      return latencySortValue(left.latency_ms) - latencySortValue(right.latency_ms);
+      return 0;
     });
   }, [filterStatus, nodes, searchQuery, sortBy, subscriptionById]);
 
@@ -516,22 +559,27 @@ export default function VPSMonitorPage() {
           <StatCard icon={Clock} label="最后检测" value={formatTime(lastChecked)} color="text-amber-400" />
         </div>
 
-        <div className="flex flex-wrap items-center gap-3 mb-6">
-          <TestAllButton testing={testingAll} onClick={handleTestAll} />
-          <SearchBox value={searchQuery} onChange={setSearchQuery} />
-          <div className="flex-1" />
-          <SlidingTabs
-            options={["all", "online", "offline", "timeout", "unknown"] as const}
-            value={filterStatus}
-            onChange={setFilterStatus}
-            labels={filterLabels}
-          />
-          <SlidingTabs
-            options={["latency", "name", "status"] as const}
-            value={sortBy}
-            onChange={setSortBy}
-            labels={sortLabels}
-          />
+        <div className="grid gap-3 mb-6 lg:grid-cols-[auto_1fr] lg:items-center">
+          <div className="flex items-center gap-3">
+            <TestAllButton testing={testingAll} onClick={handleTestAll} />
+            <div className="min-w-0 flex-1 sm:flex-none">
+              <SearchBox value={searchQuery} onChange={setSearchQuery} />
+            </div>
+          </div>
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center lg:justify-end">
+            <SlidingTabs
+              options={["all", "online", "offline", "timeout", "unknown"] as const}
+              value={filterStatus}
+              onChange={setFilterStatus}
+              labels={filterLabels}
+            />
+            <SlidingTabs
+              options={["default", "latency", "name"] as const}
+              value={sortBy}
+              onChange={setSortBy}
+              labels={sortLabels}
+            />
+          </div>
         </div>
 
         <div className="liquid-glass rounded-2xl">
@@ -555,12 +603,12 @@ export default function VPSMonitorPage() {
             <table className="w-full min-w-[720px] table-fixed">
               <thead>
                 <tr className="text-left text-[10px] text-white/30 uppercase tracking-wider">
-                  <th className="sticky top-0 z-10 py-3 px-5 border-b border-white/5 font-medium w-[28%] bg-[#181818]/95 backdrop-blur-md">名称</th>
-                  <th className="sticky top-0 z-10 py-3 px-4 border-b border-white/5 font-medium w-[90px] bg-[#181818]/95 backdrop-blur-md">协议</th>
-                  <th className="sticky top-0 z-10 py-3 px-4 border-b border-white/5 font-medium w-[100px] bg-[#181818]/95 backdrop-blur-md">状态</th>
-                  <th className="sticky top-0 z-10 py-3 px-4 border-b border-white/5 font-medium w-[80px] bg-[#181818]/95 backdrop-blur-md">延迟</th>
-                  <th className="sticky top-0 z-10 py-3 px-4 border-b border-white/5 font-medium w-[120px] bg-[#181818]/95 backdrop-blur-md">最后检测</th>
-                  <th className="sticky top-0 z-10 py-3 px-5 border-b border-white/5 font-medium text-right w-[120px] bg-[#181818]/95 backdrop-blur-md">操作</th>
+                  <th className="sticky top-0 z-10 py-3 px-5 border-y border-l border-white/10 rounded-tl-xl font-medium w-[28%] bg-[#181818]/95 backdrop-blur-md">名称</th>
+                  <th className="sticky top-0 z-10 py-3 px-4 border-y border-white/10 font-medium w-[90px] bg-[#181818]/95 backdrop-blur-md">协议</th>
+                  <th className="sticky top-0 z-10 py-3 px-4 border-y border-white/10 font-medium w-[100px] bg-[#181818]/95 backdrop-blur-md">状态</th>
+                  <th className="sticky top-0 z-10 py-3 px-4 border-y border-white/10 font-medium w-[80px] bg-[#181818]/95 backdrop-blur-md">延迟</th>
+                  <th className="sticky top-0 z-10 py-3 px-4 border-y border-white/10 font-medium w-[120px] bg-[#181818]/95 backdrop-blur-md">最后检测</th>
+                  <th className="sticky top-0 z-10 py-3 px-5 border-y border-r border-white/10 rounded-tr-xl font-medium text-right w-[120px] bg-[#181818]/95 backdrop-blur-md">操作</th>
                 </tr>
               </thead>
               <tbody>
@@ -696,7 +744,15 @@ function SubscriptionSelector({
 }) {
   const triggerRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
+  const closeTimerRef = useRef<number | null>(null);
   const [panelPosition, setPanelPosition] = useState<{ top: number; right: number } | null>(null);
+  const [panelMounted, setPanelMounted] = useState(open);
+
+  const clearCloseTimer = useCallback(() => {
+    if (closeTimerRef.current == null) return;
+    window.clearTimeout(closeTimerRef.current);
+    closeTimerRef.current = null;
+  }, []);
 
   const updatePanelPosition = useCallback(() => {
     const rect = triggerRef.current?.getBoundingClientRect();
@@ -706,6 +762,37 @@ function SubscriptionSelector({
       right: Math.max(16, window.innerWidth - rect.right),
     });
   }, []);
+
+  const finishPanelClose = useCallback(() => {
+    clearCloseTimer();
+    closeTimerRef.current = window.setTimeout(() => {
+      setPanelMounted(false);
+      closeTimerRef.current = null;
+    }, 180);
+  }, [clearCloseTimer]);
+
+  const handleToggle = useCallback(() => {
+    if (open) {
+      onToggle();
+      finishPanelClose();
+      return;
+    }
+    clearCloseTimer();
+    setPanelMounted(true);
+    onToggle();
+  }, [clearCloseTimer, finishPanelClose, onToggle, open]);
+
+  const handleClose = useCallback(() => {
+    onClose();
+    finishPanelClose();
+  }, [finishPanelClose, onClose]);
+
+  const handleSelect = useCallback((id: number | null) => {
+    onSelect(id);
+    finishPanelClose();
+  }, [finishPanelClose, onSelect]);
+
+  useEffect(() => clearCloseTimer, [clearCloseTimer]);
 
   useLayoutEffect(() => {
     if (!open) return;
@@ -726,10 +813,10 @@ function SubscriptionSelector({
       if (triggerRef.current?.contains(target) || panelRef.current?.contains(target)) {
         return;
       }
-      onClose();
+      handleClose();
     };
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onClose();
+      if (event.key === "Escape") handleClose();
     };
 
     document.addEventListener("mousedown", handleMouseDown);
@@ -738,7 +825,7 @@ function SubscriptionSelector({
       document.removeEventListener("mousedown", handleMouseDown);
       document.removeEventListener("keydown", handleKeyDown);
     };
-  }, [open, onClose]);
+  }, [handleClose, open]);
 
   if (subscriptions.length === 0) {
     return <span className="text-xs text-white/20">暂无配置订阅</span>;
@@ -758,19 +845,20 @@ function SubscriptionSelector({
         {selected ? (selected.status === "failed" ? "失败" : "正常") : failedCount ? `${failedCount} 个异常` : "正常"}
       </span>
       <button
-        onClick={onToggle}
+        onClick={handleToggle}
         className="p-1 -mr-1 text-white/25 hover:text-white/60 transition-colors"
         aria-label={open ? "收起订阅栏" : "展开订阅栏"}
       >
         <ChevronDown className={`w-3 h-3 transition-transform ${open ? "rotate-180" : ""}`} />
       </button>
-      {open && panelPosition && createPortal(
+      {panelMounted && panelPosition && createPortal(
         <SubscriptionPanel
           panelRef={panelRef}
           position={panelPosition}
+          open={open}
           subscriptions={subscriptions}
           selectedSubscriptionId={selectedSubscriptionId}
-          onSelect={onSelect}
+          onSelect={handleSelect}
         />,
         document.body,
       )}
@@ -781,12 +869,14 @@ function SubscriptionSelector({
 function SubscriptionPanel({
   panelRef,
   position,
+  open,
   subscriptions,
   selectedSubscriptionId,
   onSelect,
 }: {
   panelRef: { current: HTMLDivElement | null };
   position: { top: number; right: number };
+  open: boolean;
   subscriptions: Subscription[];
   selectedSubscriptionId: number | null;
   onSelect: (id: number | null) => void;
@@ -795,7 +885,9 @@ function SubscriptionPanel({
   return (
     <div
       ref={panelRef}
-      className="fixed z-[80] w-[240px] max-h-[320px] overflow-y-auto rounded-2xl border border-white/10 bg-[#202020]/95 backdrop-blur-xl shadow-[0_18px_48px_rgba(0,0,0,0.45)] animate-dropdown-in"
+      className={`fixed z-[80] w-[240px] max-h-[320px] overflow-y-auto rounded-2xl border border-white/10 bg-[#202020]/95 backdrop-blur-xl shadow-[0_18px_48px_rgba(0,0,0,0.45)] ${
+        open ? "animate-dropdown-in" : "animate-dropdown-out"
+      }`}
       style={{ top: position.top, right: position.right }}
     >
       <div className="divide-y divide-white/[0.04]">
@@ -863,6 +955,35 @@ function SubscriptionPanelItem({
   );
 }
 
+function ProbeSummary({
+  label,
+  status,
+  latency,
+  active,
+}: {
+  label: string;
+  status: NodeStatus;
+  latency: number | null;
+  active: boolean;
+}) {
+  const config = statusConfig[status];
+  return (
+    <div className={`rounded-xl border px-3.5 py-3 ${active ? "border-white/12 bg-white/[0.045]" : "border-white/[0.06] bg-white/[0.02]"}`}>
+      <div className="flex items-center justify-between gap-3">
+        <span className="text-[10px] text-white/30 tracking-wider uppercase">{label}</span>
+        {active && <span className="text-[9px] text-sky-300/80 bg-sky-400/10 border border-sky-400/15 px-1.5 py-0.5 rounded-full">主状态</span>}
+      </div>
+      <div className="mt-2 flex items-center justify-between gap-3">
+        <span className={`inline-flex items-center gap-1.5 text-sm ${config.color}`}>
+          <span className={`w-1.5 h-1.5 rounded-full ${config.dot}`} />
+          {config.label}
+        </span>
+        <LatencyBadge latency={latency} />
+      </div>
+    </div>
+  );
+}
+
 function NodeDetailModal({
   node,
   onClose,
@@ -894,6 +1015,13 @@ function NodeDetailModal({
             points: payload.points.map((point) => ({
               ...point,
               status: normalizeNodeStatus(point.status),
+              latency_ms: point.latency_ms ?? null,
+              transport_status: normalizeNodeStatus(point.transport_status),
+              transport_latency_ms: point.transport_latency_ms ?? null,
+              proxy_status: normalizeNodeStatus(point.proxy_status),
+              proxy_latency_ms: point.proxy_latency_ms ?? null,
+              status_source: normalizeStatusSource(point.status_source),
+              status_message: point.status_message ?? null,
             })),
             loading: false,
           });
@@ -912,24 +1040,24 @@ function NodeDetailModal({
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
       <div className="liquid-glass rounded-3xl w-full max-w-2xl max-h-[85vh] overflow-y-auto">
-        <div className="p-6 border-b border-white/5 flex items-start justify-between">
-          <div className="flex items-center gap-4 min-w-0">
+        <div className="p-5 sm:p-6 border-b border-white/5 flex items-start justify-between gap-3">
+          <div className="flex items-start gap-3 sm:gap-4 min-w-0">
             <div className={`w-12 h-12 rounded-2xl ${status.bg} flex items-center justify-center border ${status.border} flex-shrink-0`}>
               <StatusIcon className={`w-6 h-6 ${status.color}`} />
             </div>
             <div className="min-w-0">
-              <h2 className="text-xl font-medium text-white/90 truncate">{node.name}</h2>
-              <p className="text-xs text-white/30 font-mono mt-0.5">{node.server}:{node.port}</p>
+              <h2 className="text-lg sm:text-xl font-medium text-white/90 leading-snug break-words line-clamp-2">{node.name}</h2>
+              <p className="text-xs text-white/30 font-mono mt-1 break-all">{node.server}:{node.port}</p>
             </div>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-shrink-0">
             <button
               onClick={() => onTest(node.id)}
               disabled={testing}
-              className="text-xs tracking-wider text-white/40 hover:text-white/70 transition-colors flex items-center gap-1.5 px-3 py-1.5 rounded-lg hover:bg-white/5 disabled:opacity-20"
+              className="text-xs tracking-wider text-white/40 hover:text-white/70 transition-colors flex items-center gap-1.5 px-2 sm:px-3 py-1.5 rounded-lg hover:bg-white/5 disabled:opacity-20"
             >
               <RefreshCw className={`w-3.5 h-3.5 ${testing ? "animate-spin-silk" : ""}`} />
-              测速
+              <span className="hidden sm:inline">测速</span>
             </button>
             <button onClick={onClose} className="text-white/30 hover:text-white/60 p-1">
               <X className="w-5 h-5" />
@@ -937,8 +1065,8 @@ function NodeDetailModal({
           </div>
         </div>
 
-        <div className="p-6 space-y-6">
-          <div className="grid grid-cols-3 gap-4">
+        <div className="p-5 sm:p-6 space-y-6">
+          <div className="grid grid-cols-3 gap-3 sm:gap-4">
             <div className="liquid-glass rounded-xl p-4 text-center">
               <div className="text-[10px] text-white/30 tracking-wider uppercase mb-1">状态</div>
               <div className={`text-lg font-medium ${status.color}`}>{status.label}</div>
@@ -952,6 +1080,26 @@ function NodeDetailModal({
               <div className="text-lg font-mono text-sky-400">{node.protocol || "--"}</div>
             </div>
           </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <ProbeSummary
+              label="真实代理"
+              status={node.proxy_status}
+              latency={node.proxy_latency_ms}
+              active={node.status_source === "proxy"}
+            />
+            <ProbeSummary
+              label="入口探活"
+              status={node.transport_status}
+              latency={node.transport_latency_ms}
+              active={node.status_source === "transport"}
+            />
+          </div>
+          {node.status_message && (
+            <div className="rounded-xl border border-white/[0.06] bg-white/[0.025] px-3.5 py-3 text-xs text-white/35 break-words">
+              {node.status_message}
+            </div>
+          )}
 
           <div className="liquid-glass rounded-xl p-4">
             <div className="flex items-center justify-between mb-3">
@@ -1024,19 +1172,74 @@ function LatencyHistoryChart({ points }: { points: CheckHistoryPoint[] }) {
       ctx.fillText(date.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", hour12: false }), x, height - 7);
     });
 
+    const pointX = (index: number) => padding.left + (points.length === 1 ? chartW / 2 : (index / (points.length - 1)) * chartW);
+    const failureY = padding.top + chartH + 9;
+    const statusBands = points.map((point, index) => {
+      const x = pointX(index);
+      return {
+        x,
+        status: point.status,
+        latency: point.latency_ms,
+        color: historyStatusConfig[point.status].color,
+      };
+    });
+
+    statusBands.forEach((point, index) => {
+      if (point.status === "online" && point.latency != null) return;
+      const previousX = index === 0 ? padding.left : pointX(index - 1);
+      const nextX = index === points.length - 1 ? padding.left + chartW : pointX(index + 1);
+      const left = index === 0 ? point.x : point.x - (point.x - previousX) / 2;
+      const right = index === points.length - 1 ? point.x : point.x + (nextX - point.x) / 2;
+      ctx.fillStyle = point.status === "timeout" ? "rgba(251,191,36,0.10)" : "rgba(248,113,113,0.10)";
+      ctx.fillRect(left, padding.top, Math.max(2, right - left), chartH);
+    });
+
+    ctx.fillStyle = "rgba(255,255,255,0.10)";
+    ctx.fillRect(padding.left, failureY, chartW, 1);
+
     const validPoints = points
       .map((point, index) => {
         if (point.latency_ms == null) return null;
-        const x = padding.left + (points.length === 1 ? chartW : (index / (points.length - 1)) * chartW);
+        const x = pointX(index);
         const y = padding.top + chartH - ((point.latency_ms - min) / range) * chartH;
         return { x, y, latency: point.latency_ms };
       })
       .filter((point): point is { x: number; y: number; latency: number } => point != null);
 
+    const successSegments: { x: number; y: number; latency: number }[][] = [];
+    let currentSegment: { x: number; y: number; latency: number }[] = [];
+    points.forEach((point, index) => {
+      if (point.latency_ms == null) {
+        if (currentSegment.length > 0) {
+          successSegments.push(currentSegment);
+          currentSegment = [];
+        }
+        return;
+      }
+      const x = pointX(index);
+      const y = padding.top + chartH - ((point.latency_ms - min) / range) * chartH;
+      currentSegment.push({ x, y, latency: point.latency_ms });
+    });
+    if (currentSegment.length > 0) {
+      successSegments.push(currentSegment);
+    }
+
+    statusBands.forEach((point) => {
+      if (point.status === "online" && point.latency != null) return;
+      ctx.beginPath();
+      ctx.arc(point.x, failureY, 3.5, 0, Math.PI * 2);
+      ctx.fillStyle = point.color;
+      ctx.fill();
+    });
+
     if (!validPoints.length) {
       ctx.fillStyle = "rgba(255,255,255,0.22)";
       ctx.textAlign = "center";
-      ctx.fillText("近 1 小时没有成功延迟点", width / 2, height / 2);
+      ctx.fillText("近 1 小时没有成功延迟点，底部标记为失败记录", width / 2, height / 2);
+      drawHistoryLegend(ctx, width, padding.top, [
+        { color: historyStatusConfig.timeout.color, label: "超时" },
+        { color: historyStatusConfig.offline.color, label: "离线" },
+      ]);
       return;
     }
 
@@ -1044,24 +1247,26 @@ function LatencyHistoryChart({ points }: { points: CheckHistoryPoint[] }) {
     gradient.addColorStop(0, "rgba(56, 189, 248, 0.20)");
     gradient.addColorStop(1, "rgba(56, 189, 248, 0.00)");
 
-    ctx.beginPath();
-    ctx.moveTo(validPoints[0].x, padding.top + chartH);
-    validPoints.forEach((point) => ctx.lineTo(point.x, point.y));
-    ctx.lineTo(validPoints.at(-1)!.x, padding.top + chartH);
-    ctx.closePath();
-    ctx.fillStyle = gradient;
-    ctx.fill();
+    successSegments.forEach((segment) => {
+      ctx.beginPath();
+      ctx.moveTo(segment[0].x, padding.top + chartH);
+      segment.forEach((point) => ctx.lineTo(point.x, point.y));
+      ctx.lineTo(segment.at(-1)!.x, padding.top + chartH);
+      ctx.closePath();
+      ctx.fillStyle = gradient;
+      ctx.fill();
 
-    ctx.beginPath();
-    ctx.strokeStyle = "#38bdf8";
-    ctx.lineWidth = 1.6;
-    ctx.lineCap = "round";
-    ctx.lineJoin = "round";
-    validPoints.forEach((point, index) => {
-      if (index === 0) ctx.moveTo(point.x, point.y);
-      else ctx.lineTo(point.x, point.y);
+      ctx.beginPath();
+      ctx.strokeStyle = "#38bdf8";
+      ctx.lineWidth = 1.6;
+      ctx.lineCap = "round";
+      ctx.lineJoin = "round";
+      segment.forEach((point, index) => {
+        if (index === 0) ctx.moveTo(point.x, point.y);
+        else ctx.lineTo(point.x, point.y);
+      });
+      ctx.stroke();
     });
-    ctx.stroke();
 
     validPoints.forEach((point) => {
       ctx.beginPath();
@@ -1072,7 +1277,36 @@ function LatencyHistoryChart({ points }: { points: CheckHistoryPoint[] }) {
         : "#f87171";
       ctx.fill();
     });
+
+    drawHistoryLegend(ctx, width, padding.top, [
+      { color: "#38bdf8", label: "延迟" },
+      { color: historyStatusConfig.timeout.color, label: "超时" },
+      { color: historyStatusConfig.offline.color, label: "离线" },
+    ]);
   }, [points]);
 
   return <canvas ref={canvasRef} className="w-full" style={{ height: "180px" }} />;
+}
+
+function drawHistoryLegend(
+  ctx: CanvasRenderingContext2D,
+  width: number,
+  top: number,
+  items: { color: string; label: string }[],
+) {
+  ctx.font = "10px monospace";
+  ctx.textAlign = "left";
+  ctx.textBaseline = "middle";
+  let x = Math.max(52, width - 150);
+  const y = top + 4;
+  items.forEach((item) => {
+    ctx.beginPath();
+    ctx.arc(x, y, 3, 0, Math.PI * 2);
+    ctx.fillStyle = item.color;
+    ctx.fill();
+    ctx.fillStyle = "rgba(255,255,255,0.30)";
+    ctx.fillText(item.label, x + 7, y);
+    x += item.label.length * 10 + 22;
+  });
+  ctx.textBaseline = "alphabetic";
 }
