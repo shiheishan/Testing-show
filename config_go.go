@@ -19,6 +19,10 @@ type Config struct {
 	CheckTimeout                time.Duration
 	CheckRetention              time.Duration
 	ManualCheckCooldown         time.Duration
+	ProxyCheckEnabled           bool
+	ProxyCheckURL               string
+	MihomoPath                  string
+	MihomoStartTimeout          time.Duration
 	SubscriptionUA              string
 	SubscriptionTimeout         time.Duration
 	SubscriptionProxy           string
@@ -44,6 +48,9 @@ func LoadConfig(configPath string) (Config, error) {
 		CheckTimeout:        5 * time.Second,
 		CheckRetention:      24 * time.Hour,
 		ManualCheckCooldown: 15 * time.Second,
+		ProxyCheckEnabled:   true,
+		ProxyCheckURL:       "https://www.gstatic.com/generate_204",
+		MihomoStartTimeout:  8 * time.Second,
 		SubscriptionUA:      "ClashVerge",
 		SubscriptionTimeout: 10 * time.Second,
 		Subscriptions:       []ConfiguredSubscription{},
@@ -92,6 +99,18 @@ func LoadConfig(configPath string) (Config, error) {
 		if value := getDuration(root, "check", "manual_cooldown"); value != 0 {
 			cfg.ManualCheckCooldown = value
 		}
+		if value := getBool(root, "check", "proxy_enabled"); value != nil {
+			cfg.ProxyCheckEnabled = *value
+		}
+		if value := getString(root, "check", "proxy_url"); value != "" {
+			cfg.ProxyCheckURL = value
+		}
+		if value := getString(root, "check", "mihomo_path"); value != "" {
+			cfg.MihomoPath = value
+		}
+		if value := getDuration(root, "check", "mihomo_start_timeout"); value != 0 {
+			cfg.MihomoStartTimeout = value
+		}
 		if value := getString(root, "subscription", "user_agent"); value != "" {
 			cfg.SubscriptionUA = value
 		}
@@ -120,6 +139,10 @@ func LoadConfig(configPath string) (Config, error) {
 	overrideDuration(&cfg.CheckTimeout, "CHECK_TIMEOUT")
 	overrideDuration(&cfg.CheckRetention, "CHECK_RETENTION")
 	overrideDuration(&cfg.ManualCheckCooldown, "MANUAL_CHECK_COOLDOWN")
+	overrideBool(&cfg.ProxyCheckEnabled, "PROXY_CHECK_ENABLED")
+	overrideString(&cfg.ProxyCheckURL, "PROXY_CHECK_URL")
+	overrideString(&cfg.MihomoPath, "MIHOMO_PATH")
+	overrideDuration(&cfg.MihomoStartTimeout, "MIHOMO_START_TIMEOUT")
 	overrideString(&cfg.SubscriptionUA, "SUB_USER_AGENT")
 	overrideDuration(&cfg.SubscriptionTimeout, "SUB_TIMEOUT")
 	overrideDuration(&cfg.SubscriptionRefreshInterval, "SUB_REFRESH_INTERVAL")
@@ -147,6 +170,12 @@ func LoadConfig(configPath string) (Config, error) {
 	}
 	if cfg.ManualCheckCooldown < 0 {
 		cfg.ManualCheckCooldown = 0
+	}
+	if strings.TrimSpace(cfg.ProxyCheckURL) == "" {
+		cfg.ProxyCheckURL = "https://www.gstatic.com/generate_204"
+	}
+	if cfg.MihomoStartTimeout <= 0 {
+		cfg.MihomoStartTimeout = 8 * time.Second
 	}
 
 	cfg.DBPath = filepath.Clean(cfg.DBPath)
@@ -195,6 +224,17 @@ func overrideDuration(target *time.Duration, key string) {
 	}
 	value, err := parseDuration(raw)
 	if err == nil {
+		*target = value
+	}
+}
+
+func overrideBool(target *bool, key string) {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return
+	}
+	value, ok := parseBool(raw)
+	if ok {
 		*target = value
 	}
 }
@@ -389,6 +429,20 @@ func getInt(root yamlNode, keys ...string) int {
 	return 0
 }
 
+func getBool(root yamlNode, keys ...string) *bool {
+	value := getNested(root, keys...)
+	switch v := value.(type) {
+	case bool:
+		return &v
+	case string:
+		parsed, ok := parseBool(v)
+		if ok {
+			return &parsed
+		}
+	}
+	return nil
+}
+
 func getConfiguredSubscriptions(root yamlNode) ([]ConfiguredSubscription, error) {
 	raw, ok := getNested(root, "subscriptions").([]any)
 	if !ok || len(raw) == 0 {
@@ -429,4 +483,15 @@ func getDuration(root yamlNode, keys ...string) time.Duration {
 		return time.Duration(v) * time.Second
 	}
 	return 0
+}
+
+func parseBool(raw string) (bool, bool) {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "true", "yes", "1", "on":
+		return true, true
+	case "false", "no", "0", "off":
+		return false, true
+	default:
+		return false, false
+	}
 }

@@ -1,6 +1,6 @@
 # VPS 节点监控
 
-一个自用节点状态板：后端读取根目录 `subscriptions.yaml` 里的订阅链接，解析节点并由部署机器本地检测 TCP 延迟；前端只展示订阅、节点状态和最近检测结果。
+一个自用节点状态板：后端读取根目录 `subscriptions.yaml` 里的订阅链接，解析节点并由部署机器本地检测状态；TCP 探活作为入口诊断，安装 Mihomo 后会用真实代理 delay 作为主状态。
 
 ## 功能
 
@@ -8,6 +8,7 @@
 - 支持 Clash YAML 和常见 URI 订阅格式
 - SQLite 本地持久化订阅、节点和检测结果
 - 默认每 30 秒自动检测节点延迟
+- 支持可选 Mihomo 真实代理测速，避免只测入口导致 HY2/TUIC/Hysteria 等节点误判
 - 前端可手动触发全部测速或单节点测速
 - 手动测速有后端去重和冷却，多个客户同时点击不会重复开启多轮检测
 
@@ -30,6 +31,17 @@ sudo apt-get install sqlite3
 ```bash
 cp config.yaml.example config.yaml
 ```
+
+真实代理测速需要机器上能执行 `mihomo`、`clash-meta` 或 `clash`。程序会自动从 `PATH` 查找，也可以在 `config.yaml` 里指定：
+
+```yaml
+check:
+  proxy_enabled: true
+  mihomo_path: /usr/local/bin/mihomo
+  proxy_url: https://www.gstatic.com/generate_204
+```
+
+如果没有安装 Mihomo，程序会自动降级为原来的 TCP 入口探活。
 
 订阅链接单独放在根目录 `subscriptions.yaml`：
 

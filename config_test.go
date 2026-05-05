@@ -92,6 +92,38 @@ subscriptions:
 	}
 }
 
+func TestLoadConfigParsesProxyCheckSettings(t *testing.T) {
+	tempDir := t.TempDir()
+	configPath := filepath.Join(tempDir, "config.yaml")
+	content := `
+check:
+  proxy_enabled: false
+  proxy_url: https://example.com/health
+  mihomo_path: /opt/mihomo
+  mihomo_start_timeout: 3s
+`
+	if err := os.WriteFile(configPath, []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile error: %v", err)
+	}
+
+	cfg, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("LoadConfig error: %v", err)
+	}
+	if cfg.ProxyCheckEnabled {
+		t.Fatal("ProxyCheckEnabled = true, want false")
+	}
+	if cfg.ProxyCheckURL != "https://example.com/health" {
+		t.Fatalf("ProxyCheckURL = %q", cfg.ProxyCheckURL)
+	}
+	if cfg.MihomoPath != "/opt/mihomo" {
+		t.Fatalf("MihomoPath = %q", cfg.MihomoPath)
+	}
+	if cfg.MihomoStartTimeout != 3*time.Second {
+		t.Fatalf("MihomoStartTimeout = %v, want 3s", cfg.MihomoStartTimeout)
+	}
+}
+
 func TestLoadConfigUsesExternalSubscriptionsFile(t *testing.T) {
 	tempDir := t.TempDir()
 	configPath := filepath.Join(tempDir, "config.yaml")

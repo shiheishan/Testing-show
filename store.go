@@ -33,6 +33,7 @@ type Subscription struct {
 type NodeRecord struct {
 	ID             int            `json:"id"`
 	SubscriptionID int            `json:"subscription_id"`
+	DisplayOrder   int            `json:"display_order"`
 	Name           string         `json:"name"`
 	Server         string         `json:"server"`
 	Port           int            `json:"port"`
@@ -45,22 +46,40 @@ type NodeRecord struct {
 }
 
 type CheckState struct {
-	Status      string `json:"status"`
-	LatencyMS   *int   `json:"latency_ms"`
-	LastChecked string `json:"last_checked"`
+	Status             string  `json:"status"`
+	LatencyMS          *int    `json:"latency_ms"`
+	TransportStatus    string  `json:"transport_status"`
+	TransportLatencyMS *int    `json:"transport_latency_ms"`
+	ProxyStatus        string  `json:"proxy_status"`
+	ProxyLatencyMS     *int    `json:"proxy_latency_ms"`
+	StatusSource       string  `json:"status_source"`
+	StatusMessage      *string `json:"status_message"`
+	LastChecked        string  `json:"last_checked"`
 }
 
 type CheckResult struct {
-	NodeID    int
-	Status    string
-	LatencyMS *int
-	CheckedAt string
+	NodeID             int
+	Status             string
+	LatencyMS          *int
+	TransportStatus    string
+	TransportLatencyMS *int
+	ProxyStatus        string
+	ProxyLatencyMS     *int
+	StatusSource       string
+	StatusMessage      *string
+	CheckedAt          string
 }
 
 type CheckHistoryPoint struct {
-	Status    string `json:"status"`
-	LatencyMS *int   `json:"latency_ms"`
-	CheckedAt string `json:"checked_at"`
+	Status             string  `json:"status"`
+	LatencyMS          *int    `json:"latency_ms"`
+	TransportStatus    string  `json:"transport_status"`
+	TransportLatencyMS *int    `json:"transport_latency_ms"`
+	ProxyStatus        string  `json:"proxy_status"`
+	ProxyLatencyMS     *int    `json:"proxy_latency_ms"`
+	StatusSource       string  `json:"status_source"`
+	StatusMessage      *string `json:"status_message"`
+	CheckedAt          string  `json:"checked_at"`
 }
 
 type UpsertStats struct {
@@ -99,6 +118,7 @@ CREATE TABLE IF NOT EXISTS nodes (
 	server TEXT NOT NULL,
 	port INTEGER NOT NULL,
 	protocol TEXT NOT NULL,
+	display_order INTEGER NOT NULL DEFAULT 0,
 	extra_params TEXT NOT NULL DEFAULT '{}',
 	stale_since TEXT,
 	created_at TEXT NOT NULL,
@@ -110,14 +130,90 @@ CREATE TABLE IF NOT EXISTS check_results (
 	node_id INTEGER NOT NULL,
 	status TEXT NOT NULL,
 	latency_ms INTEGER,
+	transport_status TEXT NOT NULL DEFAULT 'unknown',
+	transport_latency_ms INTEGER,
+	proxy_status TEXT NOT NULL DEFAULT 'unknown',
+	proxy_latency_ms INTEGER,
+	status_source TEXT NOT NULL DEFAULT 'transport',
+	status_message TEXT,
 	checked_at TEXT NOT NULL,
 	FOREIGN KEY (node_id) REFERENCES nodes(id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_nodes_subscription ON nodes (subscription_id);
 CREATE INDEX IF NOT EXISTS idx_nodes_active ON nodes (subscription_id, stale_since);
 CREATE INDEX IF NOT EXISTS idx_check_results_node_time ON check_results (node_id, checked_at DESC);
-`
-	return s.execSQL(schema)
+	`
+	if err := s.execSQL(schema); err != nil {
+		return err
+	}
+	if err := s.ensureNodeColumns(); err != nil {
+		return err
+	}
+	if err := s.ensureCheckResultColumns(); err != nil {
+		return err
+	}
+	return s.ensurePostMigrationIndexes()
+}
+
+func (s *Store) ensureNodeColumns() error {
+	var rows []struct {
+		Name string `json:"name"`
+	}
+	if err := s.queryJSON(&rows, `PRAGMA table_info(nodes);`); err != nil {
+		return err
+	}
+	existing := map[string]struct{}{}
+	for _, row := range rows {
+		existing[row.Name] = struct{}{}
+	}
+	if _, ok := existing["display_order"]; ok {
+		return nil
+	}
+	return s.execSQL(`
+ALTER TABLE nodes ADD COLUMN display_order INTEGER NOT NULL DEFAULT 0;
+UPDATE nodes
+SET display_order = id
+WHERE display_order = 0;
+`)
+}
+
+func (s *Store) ensureCheckResultColumns() error {
+	var rows []struct {
+		Name string `json:"name"`
+	}
+	if err := s.queryJSON(&rows, `PRAGMA table_info(check_results);`); err != nil {
+		return err
+	}
+	existing := map[string]struct{}{}
+	for _, row := range rows {
+		existing[row.Name] = struct{}{}
+	}
+	columns := []struct {
+		name string
+		sql  string
+	}{
+		{name: "transport_status", sql: "ALTER TABLE check_results ADD COLUMN transport_status TEXT NOT NULL DEFAULT 'unknown';"},
+		{name: "transport_latency_ms", sql: "ALTER TABLE check_results ADD COLUMN transport_latency_ms INTEGER;"},
+		{name: "proxy_status", sql: "ALTER TABLE check_results ADD COLUMN proxy_status TEXT NOT NULL DEFAULT 'unknown';"},
+		{name: "proxy_latency_ms", sql: "ALTER TABLE check_results ADD COLUMN proxy_latency_ms INTEGER;"},
+		{name: "status_source", sql: "ALTER TABLE check_results ADD COLUMN status_source TEXT NOT NULL DEFAULT 'transport';"},
+		{name: "status_message", sql: "ALTER TABLE check_results ADD COLUMN status_message TEXT;"},
+	}
+	for _, column := range columns {
+		if _, ok := existing[column.name]; ok {
+			continue
+		}
+		if err := s.execSQL(column.sql); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Store) ensurePostMigrationIndexes() error {
+	return s.execSQL(`
+CREATE INDEX IF NOT EXISTS idx_nodes_subscription_order ON nodes (subscription_id, display_order, id);
+`)
 }
 
 func (s *Store) ListSubscriptions() ([]Subscription, error) {
@@ -291,7 +387,7 @@ WHERE id = %d;
 func (s *Store) UpsertNodes(subscriptionID int, nodes []ParsedNode) (UpsertStats, error) {
 	var existing []NodeRecord
 	err := s.queryJSON(&existing, fmt.Sprintf(`
-SELECT id, subscription_id, name, server, port, protocol, extra_params, stale_since, created_at, updated_at
+SELECT id, subscription_id, display_order, name, server, port, protocol, extra_params, stale_since, created_at, updated_at
 FROM nodes
 WHERE subscription_id = %d;
 `, subscriptionID))
@@ -317,7 +413,7 @@ WHERE subscription_id = %d;
 	stats := UpsertStats{Total: len(nodes)}
 	seen := map[key]struct{}{}
 
-	for _, node := range nodes {
+	for index, node := range nodes {
 		endpoint := key{Server: node.Server, Port: node.Port, Protocol: node.Protocol, Name: node.Name}
 		seen[endpoint] = struct{}{}
 		payload, _ := json.Marshal(node.ExtraParams)
@@ -326,20 +422,21 @@ WHERE subscription_id = %d;
 UPDATE nodes
 SET name = %s,
     protocol = %s,
+    display_order = %d,
     extra_params = %s,
     stale_since = NULL,
     updated_at = %s
 WHERE id = %d;
-`, sqlText(node.Name), sqlText(node.Protocol), sqlText(string(payload)), sqlText(now), current.ID))
+`, sqlText(node.Name), sqlText(node.Protocol), index, sqlText(string(payload)), sqlText(now), current.ID))
 			stats.Updated++
 			continue
 		}
 		script.WriteString(fmt.Sprintf(`
 INSERT INTO nodes (
-	subscription_id, name, server, port, protocol, extra_params,
+	subscription_id, name, server, port, protocol, display_order, extra_params,
 	stale_since, created_at, updated_at
-) VALUES (%d, %s, %s, %d, %s, %s, NULL, %s, %s);
-`, subscriptionID, sqlText(node.Name), sqlText(node.Server), node.Port, sqlText(node.Protocol), sqlText(string(payload)), sqlText(now), sqlText(now)))
+) VALUES (%d, %s, %s, %d, %s, %d, %s, NULL, %s, %s);
+`, subscriptionID, sqlText(node.Name), sqlText(node.Server), node.Port, sqlText(node.Protocol), index, sqlText(string(payload)), sqlText(now), sqlText(now)))
 		stats.Created++
 	}
 
@@ -383,10 +480,10 @@ func (s *Store) ListNodes(subscriptionID *int, includeStale bool) ([]NodeRecord,
 	}
 	var items []NodeRecord
 	err := s.queryJSON(&items, fmt.Sprintf(`
-SELECT id, subscription_id, name, server, port, protocol, extra_params, stale_since, created_at, updated_at
+SELECT id, subscription_id, display_order, name, server, port, protocol, extra_params, stale_since, created_at, updated_at
 FROM nodes
 %s
-ORDER BY subscription_id ASC, name COLLATE NOCASE ASC, id ASC;
+ORDER BY subscription_id ASC, display_order ASC, id ASC;
 `, whereClause))
 	if err != nil {
 		return nil, err
@@ -433,10 +530,33 @@ func (s *Store) InsertCheckResults(results []CheckResult, retention time.Duratio
 		if result.LatencyMS != nil {
 			latencyValue = strconv.Itoa(*result.LatencyMS)
 		}
+		transportLatencyValue := "NULL"
+		if result.TransportLatencyMS != nil {
+			transportLatencyValue = strconv.Itoa(*result.TransportLatencyMS)
+		}
+		proxyLatencyValue := "NULL"
+		if result.ProxyLatencyMS != nil {
+			proxyLatencyValue = strconv.Itoa(*result.ProxyLatencyMS)
+		}
 		script.WriteString(fmt.Sprintf(`
-INSERT INTO check_results (node_id, status, latency_ms, checked_at)
-VALUES (%d, %s, %s, %s);
-`, result.NodeID, sqlText(result.Status), latencyValue, sqlText(result.CheckedAt)))
+INSERT INTO check_results (
+	node_id, status, latency_ms,
+	transport_status, transport_latency_ms,
+	proxy_status, proxy_latency_ms,
+	status_source, status_message, checked_at
+) VALUES (%d, %s, %s, %s, %s, %s, %s, %s, %s, %s);
+`,
+			result.NodeID,
+			sqlText(normalizeCheckStatus(result.Status)),
+			latencyValue,
+			sqlText(normalizeCheckStatus(result.TransportStatus)),
+			transportLatencyValue,
+			sqlText(normalizeCheckStatus(result.ProxyStatus)),
+			proxyLatencyValue,
+			sqlText(normalizeStatusSource(result.StatusSource)),
+			sqlNullableText(result.StatusMessage),
+			sqlText(result.CheckedAt),
+		))
 	}
 	cutoff := time.Now().UTC().Add(-retention).Format(time.RFC3339)
 	script.WriteString(fmt.Sprintf(`
@@ -448,13 +568,23 @@ COMMIT;
 
 func (s *Store) LoadLatestResults() (map[int]CheckState, error) {
 	var rows []struct {
-		NodeID      int    `json:"node_id"`
-		Status      string `json:"status"`
-		LatencyMS   *int   `json:"latency_ms"`
-		LastChecked string `json:"last_checked"`
+		NodeID             int     `json:"node_id"`
+		Status             string  `json:"status"`
+		LatencyMS          *int    `json:"latency_ms"`
+		TransportStatus    string  `json:"transport_status"`
+		TransportLatencyMS *int    `json:"transport_latency_ms"`
+		ProxyStatus        string  `json:"proxy_status"`
+		ProxyLatencyMS     *int    `json:"proxy_latency_ms"`
+		StatusSource       string  `json:"status_source"`
+		StatusMessage      *string `json:"status_message"`
+		LastChecked        string  `json:"last_checked"`
 	}
 	err := s.queryJSON(&rows, `
-SELECT node_id, status, latency_ms, checked_at AS last_checked
+SELECT node_id, status, latency_ms,
+       transport_status, transport_latency_ms,
+       proxy_status, proxy_latency_ms,
+       status_source, status_message,
+       checked_at AS last_checked
 FROM check_results
 WHERE id IN (
 	SELECT MAX(id)
@@ -467,11 +597,17 @@ WHERE id IN (
 	}
 	items := make(map[int]CheckState, len(rows))
 	for _, row := range rows {
-		items[row.NodeID] = CheckState{
-			Status:      row.Status,
-			LatencyMS:   row.LatencyMS,
-			LastChecked: row.LastChecked,
-		}
+		items[row.NodeID] = normalizeCheckState(CheckState{
+			Status:             row.Status,
+			LatencyMS:          row.LatencyMS,
+			TransportStatus:    row.TransportStatus,
+			TransportLatencyMS: row.TransportLatencyMS,
+			ProxyStatus:        row.ProxyStatus,
+			ProxyLatencyMS:     row.ProxyLatencyMS,
+			StatusSource:       row.StatusSource,
+			StatusMessage:      row.StatusMessage,
+			LastChecked:        row.LastChecked,
+		})
 	}
 	return items, nil
 }
@@ -479,7 +615,11 @@ WHERE id IN (
 func (s *Store) ListCheckHistory(nodeID int, since time.Time) ([]CheckHistoryPoint, error) {
 	var rows []CheckHistoryPoint
 	err := s.queryJSON(&rows, fmt.Sprintf(`
-SELECT status, latency_ms, checked_at
+SELECT status, latency_ms,
+       transport_status, transport_latency_ms,
+       proxy_status, proxy_latency_ms,
+       status_source, status_message,
+       checked_at
 FROM check_results
 WHERE node_id = %d
   AND checked_at >= %s
@@ -487,6 +627,27 @@ ORDER BY checked_at ASC;
 `, nodeID, sqlText(since.UTC().Format(time.RFC3339))))
 	if err != nil {
 		return nil, err
+	}
+	for index := range rows {
+		state := normalizeCheckState(CheckState{
+			Status:             rows[index].Status,
+			LatencyMS:          rows[index].LatencyMS,
+			TransportStatus:    rows[index].TransportStatus,
+			TransportLatencyMS: rows[index].TransportLatencyMS,
+			ProxyStatus:        rows[index].ProxyStatus,
+			ProxyLatencyMS:     rows[index].ProxyLatencyMS,
+			StatusSource:       rows[index].StatusSource,
+			StatusMessage:      rows[index].StatusMessage,
+			LastChecked:        rows[index].CheckedAt,
+		})
+		rows[index].Status = state.Status
+		rows[index].LatencyMS = state.LatencyMS
+		rows[index].TransportStatus = state.TransportStatus
+		rows[index].TransportLatencyMS = state.TransportLatencyMS
+		rows[index].ProxyStatus = state.ProxyStatus
+		rows[index].ProxyLatencyMS = state.ProxyLatencyMS
+		rows[index].StatusSource = state.StatusSource
+		rows[index].StatusMessage = state.StatusMessage
 	}
 	return rows, nil
 }
@@ -536,6 +697,47 @@ func (s *Store) queryJSON(dest any, sql string) error {
 
 func sqlText(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", "''") + "'"
+}
+
+func sqlNullableText(value *string) string {
+	if value == nil {
+		return "NULL"
+	}
+	return sqlText(*value)
+}
+
+func normalizeCheckState(state CheckState) CheckState {
+	state.Status = normalizeCheckStatus(state.Status)
+	state.TransportStatus = normalizeCheckStatus(state.TransportStatus)
+	state.ProxyStatus = normalizeCheckStatus(state.ProxyStatus)
+	state.StatusSource = normalizeStatusSource(state.StatusSource)
+	if state.TransportStatus == "unknown" && state.StatusSource == "transport" {
+		state.TransportStatus = state.Status
+		state.TransportLatencyMS = state.LatencyMS
+	}
+	if state.ProxyStatus == "unknown" && state.StatusSource == "proxy" {
+		state.ProxyStatus = state.Status
+		state.ProxyLatencyMS = state.LatencyMS
+	}
+	return state
+}
+
+func normalizeCheckStatus(status string) string {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "online", "offline", "timeout":
+		return strings.ToLower(strings.TrimSpace(status))
+	default:
+		return "unknown"
+	}
+}
+
+func normalizeStatusSource(source string) string {
+	switch strings.ToLower(strings.TrimSpace(source)) {
+	case "proxy":
+		return "proxy"
+	default:
+		return "transport"
+	}
 }
 
 func applySubscriptionStatuses(items []Subscription) {
