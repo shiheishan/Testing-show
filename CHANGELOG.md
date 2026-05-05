@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.2.1] - 2026-05-05
+
+### Changed
+
+- Changed the default automatic node check interval from 30 seconds to 1 minute.
+
+### Fixed
+
+- Improved Mihomo proxy check failure messages so nodes can show the returned 503/504 reason instead of only a generic offline status.
+- Preserved successful Mihomo delay responses while reading error bodies, keeping online nodes from being misclassified during diagnostics.
+
 ## [0.2.0] - 2026-05-05
 
 ### Added
