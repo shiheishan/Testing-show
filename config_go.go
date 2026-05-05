@@ -43,7 +43,7 @@ func LoadConfig(configPath string) (Config, error) {
 		Port:                8080,
 		DBPath:              "./data/nodes.db",
 		SubscriptionsPath:   "subscriptions.yaml",
-		CheckInterval:       30 * time.Second,
+		CheckInterval:       time.Minute,
 		CheckConcurrency:    50,
 		CheckTimeout:        5 * time.Second,
 		CheckRetention:      24 * time.Hour,

@@ -6,8 +6,8 @@ db:
   path: ./data/nodes.db
 
 check:
-  # 部署机器本地每 30 秒检测一轮节点。
-  interval: 30s
+  # 部署机器本地每 1 分钟检测一轮节点。
+  interval: 1m
   concurrency: 50
   timeout: 5s
   retention: 24h

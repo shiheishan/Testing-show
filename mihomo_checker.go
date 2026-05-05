@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -324,11 +325,15 @@ func probeMihomoDelay(client *http.Client, baseURL string, proxyName string, tar
 	defer func() {
 		_ = resp.Body.Close()
 	}()
-	if resp.StatusCode == http.StatusRequestTimeout || resp.StatusCode == http.StatusGatewayTimeout {
-		return ProbeResult{Status: "timeout", Message: resp.Status}
-	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return ProbeResult{Status: "offline", Message: resp.Status}
+		message := mihomoHTTPErrorMessage(resp)
+		if resp.StatusCode == http.StatusRequestTimeout || resp.StatusCode == http.StatusGatewayTimeout {
+			return ProbeResult{Status: "timeout", Message: message}
+		}
+		if isTimeoutMessage(message) {
+			return ProbeResult{Status: "timeout", Message: message}
+		}
+		return ProbeResult{Status: "offline", Message: message}
 	}
 	var payload struct {
 		Delay int `json:"delay"`
@@ -338,6 +343,36 @@ func probeMihomoDelay(client *http.Client, baseURL string, proxyName string, tar
 	}
 	latency := payload.Delay
 	return ProbeResult{Status: "online", LatencyMS: &latency}
+}
+
+func mihomoHTTPErrorMessage(resp *http.Response) string {
+	status := resp.Status
+	if resp.Body == nil {
+		return status
+	}
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	if err != nil {
+		return status
+	}
+	body := strings.TrimSpace(string(raw))
+	if body == "" {
+		return status
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(raw, &payload); err == nil {
+		for _, key := range []string{"message", "error"} {
+			if value := strings.TrimSpace(asString(payload[key])); value != "" {
+				return fmt.Sprintf("%s: %s", status, value)
+			}
+		}
+	}
+	return fmt.Sprintf("%s: %s", status, body)
+}
+
+func isTimeoutMessage(message string) bool {
+	lower := strings.ToLower(message)
+	return strings.Contains(lower, "timeout") || strings.Contains(lower, "deadline exceeded")
 }
 
 func freeLocalPort() (int, error) {

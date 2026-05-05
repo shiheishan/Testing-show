@@ -52,6 +52,9 @@ func TestLoadConfigDefaultsToClashVergeUA(t *testing.T) {
 	if cfg.SubscriptionUA != "ClashVerge" {
 		t.Fatalf("SubscriptionUA = %q, want %q", cfg.SubscriptionUA, "ClashVerge")
 	}
+	if cfg.CheckInterval != time.Minute {
+		t.Fatalf("CheckInterval = %v, want 1m", cfg.CheckInterval)
+	}
 }
 
 func TestLoadConfigParsesConfiguredSubscriptions(t *testing.T) {
