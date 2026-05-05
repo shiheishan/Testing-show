@@ -52,6 +52,15 @@ func TestLoadConfigDefaultsToClashVergeUA(t *testing.T) {
 	if cfg.SubscriptionUA != "ClashVerge" {
 		t.Fatalf("SubscriptionUA = %q, want %q", cfg.SubscriptionUA, "ClashVerge")
 	}
+	if cfg.CheckInterval != 6*time.Minute {
+		t.Fatalf("CheckInterval = %v, want 6m", cfg.CheckInterval)
+	}
+	if cfg.ProxyCheckConcurrency != 10 {
+		t.Fatalf("ProxyCheckConcurrency = %d, want 10", cfg.ProxyCheckConcurrency)
+	}
+	if !cfg.ProxyCheckWarmup {
+		t.Fatal("ProxyCheckWarmup = false, want true")
+	}
 }
 
 func TestLoadConfigParsesConfiguredSubscriptions(t *testing.T) {
@@ -99,6 +108,8 @@ func TestLoadConfigParsesProxyCheckSettings(t *testing.T) {
 check:
   proxy_enabled: false
   proxy_url: https://example.com/health
+  proxy_concurrency: 7
+  proxy_warmup: false
   mihomo_path: /opt/mihomo
   mihomo_start_timeout: 3s
 `
@@ -115,6 +126,12 @@ check:
 	}
 	if cfg.ProxyCheckURL != "https://example.com/health" {
 		t.Fatalf("ProxyCheckURL = %q", cfg.ProxyCheckURL)
+	}
+	if cfg.ProxyCheckConcurrency != 7 {
+		t.Fatalf("ProxyCheckConcurrency = %d, want 7", cfg.ProxyCheckConcurrency)
+	}
+	if cfg.ProxyCheckWarmup {
+		t.Fatal("ProxyCheckWarmup = true, want false")
 	}
 	if cfg.MihomoPath != "/opt/mihomo" {
 		t.Fatalf("MihomoPath = %q", cfg.MihomoPath)

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -23,6 +24,7 @@ type MihomoDelayRunner struct {
 	delayURL     string
 	startTimeout time.Duration
 	concurrency  int
+	warmup       bool
 }
 
 type unavailableProxyDelayRunner struct {
@@ -54,7 +56,7 @@ func NewProxyDelayRunner(config Config) ProxyDelayRunner {
 	if startTimeout <= 0 {
 		startTimeout = 8 * time.Second
 	}
-	concurrency := config.CheckConcurrency
+	concurrency := config.ProxyCheckConcurrency
 	if concurrency <= 0 {
 		concurrency = 1
 	}
@@ -63,6 +65,7 @@ func NewProxyDelayRunner(config Config) ProxyDelayRunner {
 		delayURL:     delayURL,
 		startTimeout: startTimeout,
 		concurrency:  concurrency,
+		warmup:       config.ProxyCheckWarmup,
 	}
 }
 
@@ -237,7 +240,7 @@ func (r *MihomoDelayRunner) runCandidateBatch(candidates []mihomoProxyCandidate,
 		go func(nodeID int, proxyName string) {
 			defer wg.Done()
 			sem <- struct{}{}
-			result := probeMihomoDelay(client, baseURL, proxyName, r.delayURL, timeout)
+			result := probeMihomoDelayWithWarmup(client, baseURL, proxyName, r.delayURL, timeout, r.warmup)
 			<-sem
 			mu.Lock()
 			results[nodeID] = result
@@ -302,6 +305,20 @@ func waitMihomoController(baseURL string, timeout time.Duration) error {
 	return errors.New("mihomo controller did not start")
 }
 
+func probeMihomoDelayWithWarmup(
+	client *http.Client,
+	baseURL string,
+	proxyName string,
+	targetURL string,
+	timeout time.Duration,
+	warmup bool,
+) ProbeResult {
+	if warmup {
+		_ = probeMihomoDelay(client, baseURL, proxyName, targetURL, timeout)
+	}
+	return probeMihomoDelay(client, baseURL, proxyName, targetURL, timeout)
+}
+
 func probeMihomoDelay(client *http.Client, baseURL string, proxyName string, targetURL string, timeout time.Duration) ProbeResult {
 	timeoutMS := int(timeout.Milliseconds())
 	if timeoutMS <= 0 {
@@ -324,11 +341,15 @@ func probeMihomoDelay(client *http.Client, baseURL string, proxyName string, tar
 	defer func() {
 		_ = resp.Body.Close()
 	}()
-	if resp.StatusCode == http.StatusRequestTimeout || resp.StatusCode == http.StatusGatewayTimeout {
-		return ProbeResult{Status: "timeout", Message: resp.Status}
-	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return ProbeResult{Status: "offline", Message: resp.Status}
+		message := mihomoHTTPErrorMessage(resp)
+		if resp.StatusCode == http.StatusRequestTimeout || resp.StatusCode == http.StatusGatewayTimeout {
+			return ProbeResult{Status: "timeout", Message: message}
+		}
+		if isTimeoutMessage(message) {
+			return ProbeResult{Status: "timeout", Message: message}
+		}
+		return ProbeResult{Status: "offline", Message: message}
 	}
 	var payload struct {
 		Delay int `json:"delay"`
@@ -338,6 +359,36 @@ func probeMihomoDelay(client *http.Client, baseURL string, proxyName string, tar
 	}
 	latency := payload.Delay
 	return ProbeResult{Status: "online", LatencyMS: &latency}
+}
+
+func mihomoHTTPErrorMessage(resp *http.Response) string {
+	status := resp.Status
+	if resp.Body == nil {
+		return status
+	}
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	if err != nil {
+		return status
+	}
+	body := strings.TrimSpace(string(raw))
+	if body == "" {
+		return status
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(raw, &payload); err == nil {
+		for _, key := range []string{"message", "error"} {
+			if value := strings.TrimSpace(asString(payload[key])); value != "" {
+				return fmt.Sprintf("%s: %s", status, value)
+			}
+		}
+	}
+	return fmt.Sprintf("%s: %s", status, body)
+}
+
+func isTimeoutMessage(message string) bool {
+	lower := strings.ToLower(message)
+	return strings.Contains(lower, "timeout") || strings.Contains(lower, "deadline exceeded")
 }
 
 func freeLocalPort() (int, error) {

@@ -2,8 +2,18 @@ package main
 
 import (
 	"fmt"
+	"io"
+	"net/http"
+	"strings"
 	"testing"
+	"time"
 )
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) {
+	return f(r)
+}
 
 func TestNodeToMihomoProxyMapsCommonFields(t *testing.T) {
 	node := NodeRecord{
@@ -150,6 +160,143 @@ func TestUnavailableProxyDelayRunnerReportsReason(t *testing.T) {
 	got := results[1]
 	if got.Status != "unknown" || got.Message != "missing mihomo" {
 		t.Fatalf("unexpected result: %+v", got)
+	}
+}
+
+func TestNewProxyDelayRunnerUsesProxyCheckSettings(t *testing.T) {
+	runner := NewProxyDelayRunner(Config{
+		ProxyCheckEnabled:     true,
+		ProxyCheckURL:         "https://example.com/generate_204",
+		ProxyCheckConcurrency: 3,
+		ProxyCheckWarmup:      false,
+		MihomoPath:            "/opt/mihomo",
+		MihomoStartTimeout:    2 * time.Second,
+	})
+
+	got, ok := runner.(*MihomoDelayRunner)
+	if !ok {
+		t.Fatalf("runner type = %T, want *MihomoDelayRunner", runner)
+	}
+	if got.concurrency != 3 {
+		t.Fatalf("concurrency = %d, want 3", got.concurrency)
+	}
+	if got.warmup {
+		t.Fatal("warmup = true, want false")
+	}
+	if got.delayURL != "https://example.com/generate_204" {
+		t.Fatalf("delayURL = %q", got.delayURL)
+	}
+	if got.path != "/opt/mihomo" {
+		t.Fatalf("path = %q", got.path)
+	}
+	if got.startTimeout != 2*time.Second {
+		t.Fatalf("startTimeout = %v, want 2s", got.startTimeout)
+	}
+}
+
+func TestProbeMihomoDelayIncludesErrorBody(t *testing.T) {
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusServiceUnavailable,
+			Status:     "503 Service Unavailable",
+			Body:       io.NopCloser(strings.NewReader(`{"message":"dial tcp 203.0.113.1:443: connect: connection refused"}`)),
+			Request:    r,
+		}, nil
+	})}
+
+	result := probeMihomoDelay(client, "http://mihomo.local", "bad-node", "https://example.com/generate_204", 5*time.Second)
+	if result.Status != "offline" {
+		t.Fatalf("status = %s, want offline", result.Status)
+	}
+	if !strings.Contains(result.Message, "503 Service Unavailable") || !strings.Contains(result.Message, "connection refused") {
+		t.Fatalf("message did not include status and body: %q", result.Message)
+	}
+}
+
+func TestProbeMihomoDelayKeepsSuccessBodyReadable(t *testing.T) {
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Body:       io.NopCloser(strings.NewReader(`{"delay":123}`)),
+			Request:    r,
+		}, nil
+	})}
+
+	result := probeMihomoDelay(client, "http://mihomo.local", "good-node", "https://example.com/generate_204", 5*time.Second)
+	if result.Status != "online" {
+		t.Fatalf("status = %s, want online; result = %+v", result.Status, result)
+	}
+	if result.LatencyMS == nil || *result.LatencyMS != 123 {
+		t.Fatalf("latency = %v, want 123", result.LatencyMS)
+	}
+}
+
+func TestProbeMihomoDelayWithWarmupRecordsSecondResult(t *testing.T) {
+	calls := 0
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		calls++
+		delay := 900
+		if calls == 2 {
+			delay = 120
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Body:       io.NopCloser(strings.NewReader(fmt.Sprintf(`{"delay":%d}`, delay))),
+			Request:    r,
+		}, nil
+	})}
+
+	result := probeMihomoDelayWithWarmup(client, "http://mihomo.local", "warm-node", "https://example.com/generate_204", 5*time.Second, true)
+	if calls != 2 {
+		t.Fatalf("calls = %d, want 2", calls)
+	}
+	if result.Status != "online" {
+		t.Fatalf("status = %s, want online; result = %+v", result.Status, result)
+	}
+	if result.LatencyMS == nil || *result.LatencyMS != 120 {
+		t.Fatalf("latency = %v, want 120", result.LatencyMS)
+	}
+}
+
+func TestProbeMihomoDelayWithWarmupDisabledRecordsFirstResult(t *testing.T) {
+	calls := 0
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		calls++
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Body:       io.NopCloser(strings.NewReader(`{"delay":333}`)),
+			Request:    r,
+		}, nil
+	})}
+
+	result := probeMihomoDelayWithWarmup(client, "http://mihomo.local", "cold-node", "https://example.com/generate_204", 5*time.Second, false)
+	if calls != 1 {
+		t.Fatalf("calls = %d, want 1", calls)
+	}
+	if result.LatencyMS == nil || *result.LatencyMS != 333 {
+		t.Fatalf("latency = %v, want 333", result.LatencyMS)
+	}
+}
+
+func TestProbeMihomoDelayClassifiesTimeoutBody(t *testing.T) {
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusServiceUnavailable,
+			Status:     "503 Service Unavailable",
+			Body:       io.NopCloser(strings.NewReader(`{"message":"Get \"https://example.com\": i/o timeout"}`)),
+			Request:    r,
+		}, nil
+	})}
+
+	result := probeMihomoDelay(client, "http://mihomo.local", "slow-node", "https://example.com/generate_204", 5*time.Second)
+	if result.Status != "timeout" {
+		t.Fatalf("status = %s, want timeout; result = %+v", result.Status, result)
+	}
+	if !strings.Contains(result.Message, "i/o timeout") {
+		t.Fatalf("message did not include timeout body: %q", result.Message)
 	}
 }
 
