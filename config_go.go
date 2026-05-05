@@ -21,6 +21,8 @@ type Config struct {
 	ManualCheckCooldown         time.Duration
 	ProxyCheckEnabled           bool
 	ProxyCheckURL               string
+	ProxyCheckConcurrency       int
+	ProxyCheckWarmup            bool
 	MihomoPath                  string
 	MihomoStartTimeout          time.Duration
 	SubscriptionUA              string
@@ -39,21 +41,23 @@ type ConfiguredSubscription struct {
 
 func LoadConfig(configPath string) (Config, error) {
 	cfg := Config{
-		Host:                "0.0.0.0",
-		Port:                8080,
-		DBPath:              "./data/nodes.db",
-		SubscriptionsPath:   "subscriptions.yaml",
-		CheckInterval:       time.Minute,
-		CheckConcurrency:    50,
-		CheckTimeout:        5 * time.Second,
-		CheckRetention:      24 * time.Hour,
-		ManualCheckCooldown: 15 * time.Second,
-		ProxyCheckEnabled:   true,
-		ProxyCheckURL:       "https://www.gstatic.com/generate_204",
-		MihomoStartTimeout:  8 * time.Second,
-		SubscriptionUA:      "ClashVerge",
-		SubscriptionTimeout: 10 * time.Second,
-		Subscriptions:       []ConfiguredSubscription{},
+		Host:                  "0.0.0.0",
+		Port:                  8080,
+		DBPath:                "./data/nodes.db",
+		SubscriptionsPath:     "subscriptions.yaml",
+		CheckInterval:         6 * time.Minute,
+		CheckConcurrency:      50,
+		CheckTimeout:          5 * time.Second,
+		CheckRetention:        24 * time.Hour,
+		ManualCheckCooldown:   15 * time.Second,
+		ProxyCheckEnabled:     true,
+		ProxyCheckURL:         "https://www.gstatic.com/generate_204",
+		ProxyCheckConcurrency: 10,
+		ProxyCheckWarmup:      true,
+		MihomoStartTimeout:    8 * time.Second,
+		SubscriptionUA:        "ClashVerge",
+		SubscriptionTimeout:   10 * time.Second,
+		Subscriptions:         []ConfiguredSubscription{},
 	}
 
 	path := configPath
@@ -105,6 +109,12 @@ func LoadConfig(configPath string) (Config, error) {
 		if value := getString(root, "check", "proxy_url"); value != "" {
 			cfg.ProxyCheckURL = value
 		}
+		if value := getInt(root, "check", "proxy_concurrency"); value != 0 {
+			cfg.ProxyCheckConcurrency = value
+		}
+		if value := getBool(root, "check", "proxy_warmup"); value != nil {
+			cfg.ProxyCheckWarmup = *value
+		}
 		if value := getString(root, "check", "mihomo_path"); value != "" {
 			cfg.MihomoPath = value
 		}
@@ -141,6 +151,8 @@ func LoadConfig(configPath string) (Config, error) {
 	overrideDuration(&cfg.ManualCheckCooldown, "MANUAL_CHECK_COOLDOWN")
 	overrideBool(&cfg.ProxyCheckEnabled, "PROXY_CHECK_ENABLED")
 	overrideString(&cfg.ProxyCheckURL, "PROXY_CHECK_URL")
+	overrideInt(&cfg.ProxyCheckConcurrency, "PROXY_CHECK_CONCURRENCY")
+	overrideBool(&cfg.ProxyCheckWarmup, "PROXY_CHECK_WARMUP")
 	overrideString(&cfg.MihomoPath, "MIHOMO_PATH")
 	overrideDuration(&cfg.MihomoStartTimeout, "MIHOMO_START_TIMEOUT")
 	overrideString(&cfg.SubscriptionUA, "SUB_USER_AGENT")
@@ -164,6 +176,9 @@ func LoadConfig(configPath string) (Config, error) {
 
 	if cfg.CheckConcurrency <= 0 {
 		return cfg, fmt.Errorf("CHECK_CONCURRENCY must be positive")
+	}
+	if cfg.ProxyCheckConcurrency <= 0 {
+		return cfg, fmt.Errorf("PROXY_CHECK_CONCURRENCY must be positive")
 	}
 	if cfg.SubscriptionRefreshInterval <= 0 {
 		cfg.SubscriptionRefreshInterval = 5 * time.Minute

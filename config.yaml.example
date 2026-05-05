@@ -6,8 +6,8 @@ db:
   path: ./data/nodes.db
 
 check:
-  # 部署机器本地每 1 分钟检测一轮节点。
-  interval: 1m
+  # 部署机器本地每 6 分钟检测一轮节点。
+  interval: 6m
   concurrency: 50
   timeout: 5s
   retention: 24h
@@ -16,6 +16,10 @@ check:
   # TCP 探活只做入口诊断；如果机器上能找到 mihomo，则用真实代理 delay 作为主状态。
   proxy_enabled: true
   proxy_url: https://www.gstatic.com/generate_204
+  # 真实代理测速比 TCP 探活重，单独限流，避免小 VPS 同时压太多节点。
+  proxy_concurrency: 10
+  # 先跑一次预热请求，再记录第二次测速，降低冷握手对延迟的影响。
+  proxy_warmup: true
   # 留空时自动查找 mihomo / clash-meta / clash。
   # mihomo_path: /usr/local/bin/mihomo
   mihomo_start_timeout: 8s

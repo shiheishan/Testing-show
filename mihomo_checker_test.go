@@ -201,6 +201,55 @@ func TestProbeMihomoDelayKeepsSuccessBodyReadable(t *testing.T) {
 	}
 }
 
+func TestProbeMihomoDelayWithWarmupRecordsSecondResult(t *testing.T) {
+	calls := 0
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		calls++
+		delay := 900
+		if calls == 2 {
+			delay = 120
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Body:       io.NopCloser(strings.NewReader(fmt.Sprintf(`{"delay":%d}`, delay))),
+			Request:    r,
+		}, nil
+	})}
+
+	result := probeMihomoDelayWithWarmup(client, "http://mihomo.local", "warm-node", "https://example.com/generate_204", 5*time.Second, true)
+	if calls != 2 {
+		t.Fatalf("calls = %d, want 2", calls)
+	}
+	if result.Status != "online" {
+		t.Fatalf("status = %s, want online; result = %+v", result.Status, result)
+	}
+	if result.LatencyMS == nil || *result.LatencyMS != 120 {
+		t.Fatalf("latency = %v, want 120", result.LatencyMS)
+	}
+}
+
+func TestProbeMihomoDelayWithWarmupDisabledRecordsFirstResult(t *testing.T) {
+	calls := 0
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		calls++
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Body:       io.NopCloser(strings.NewReader(`{"delay":333}`)),
+			Request:    r,
+		}, nil
+	})}
+
+	result := probeMihomoDelayWithWarmup(client, "http://mihomo.local", "cold-node", "https://example.com/generate_204", 5*time.Second, false)
+	if calls != 1 {
+		t.Fatalf("calls = %d, want 1", calls)
+	}
+	if result.LatencyMS == nil || *result.LatencyMS != 333 {
+		t.Fatalf("latency = %v, want 333", result.LatencyMS)
+	}
+}
+
 func TestProbeMihomoDelayClassifiesTimeoutBody(t *testing.T) {
 	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		return &http.Response{

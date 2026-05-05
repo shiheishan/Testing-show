@@ -4,11 +4,13 @@
 
 ### Changed
 
-- Changed the default automatic node check interval from 30 seconds to 1 minute.
+- Changed the default automatic node check interval from 30 seconds to 6 minutes.
+- Added a separate default concurrency limit for Mihomo real proxy checks so TCP entry checks can stay fast while proxy checks avoid overloading small VPS hosts.
 
 ### Fixed
 
 - Improved Mihomo proxy check failure messages so nodes can show the returned 503/504 reason instead of only a generic offline status.
+- Added a warmup request before recording Mihomo proxy delay so cold handshakes have less impact on the displayed latency.
 - Preserved successful Mihomo delay responses while reading error bodies, keeping online nodes from being misclassified during diagnostics.
 
 ## [0.2.0] - 2026-05-05

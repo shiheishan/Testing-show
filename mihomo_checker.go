@@ -24,6 +24,7 @@ type MihomoDelayRunner struct {
 	delayURL     string
 	startTimeout time.Duration
 	concurrency  int
+	warmup       bool
 }
 
 type unavailableProxyDelayRunner struct {
@@ -55,7 +56,7 @@ func NewProxyDelayRunner(config Config) ProxyDelayRunner {
 	if startTimeout <= 0 {
 		startTimeout = 8 * time.Second
 	}
-	concurrency := config.CheckConcurrency
+	concurrency := config.ProxyCheckConcurrency
 	if concurrency <= 0 {
 		concurrency = 1
 	}
@@ -64,6 +65,7 @@ func NewProxyDelayRunner(config Config) ProxyDelayRunner {
 		delayURL:     delayURL,
 		startTimeout: startTimeout,
 		concurrency:  concurrency,
+		warmup:       config.ProxyCheckWarmup,
 	}
 }
 
@@ -238,7 +240,7 @@ func (r *MihomoDelayRunner) runCandidateBatch(candidates []mihomoProxyCandidate,
 		go func(nodeID int, proxyName string) {
 			defer wg.Done()
 			sem <- struct{}{}
-			result := probeMihomoDelay(client, baseURL, proxyName, r.delayURL, timeout)
+			result := probeMihomoDelayWithWarmup(client, baseURL, proxyName, r.delayURL, timeout, r.warmup)
 			<-sem
 			mu.Lock()
 			results[nodeID] = result
@@ -301,6 +303,20 @@ func waitMihomoController(baseURL string, timeout time.Duration) error {
 		return fmt.Errorf("mihomo controller did not start: %w", lastErr)
 	}
 	return errors.New("mihomo controller did not start")
+}
+
+func probeMihomoDelayWithWarmup(
+	client *http.Client,
+	baseURL string,
+	proxyName string,
+	targetURL string,
+	timeout time.Duration,
+	warmup bool,
+) ProbeResult {
+	if warmup {
+		_ = probeMihomoDelay(client, baseURL, proxyName, targetURL, timeout)
+	}
+	return probeMihomoDelay(client, baseURL, proxyName, targetURL, timeout)
 }
 
 func probeMihomoDelay(client *http.Client, baseURL string, proxyName string, targetURL string, timeout time.Duration) ProbeResult {
