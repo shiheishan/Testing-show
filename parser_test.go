@@ -30,6 +30,42 @@ proxies:
 	}
 }
 
+func TestParseClashYAMLPreservesDNSForChecks(t *testing.T) {
+	content := `
+dns:
+  enabled: true
+  listen: 0.0.0.0:1053
+  enhanced-mode: fake-ip
+  nameserver:
+    - https://doh.pub/dns-query
+    - https://dns.alidns.com/dns-query
+proxies:
+  - name: DNS Node
+    type: anytls
+    server: sanwang.woainilzr.com
+    port: 49501
+    password: secret
+`
+	report, err := ParseSubscriptionDetailed(content)
+	if err != nil {
+		t.Fatalf("ParseSubscriptionDetailed error: %v", err)
+	}
+	if len(report.Nodes) != 1 {
+		t.Fatalf("nodes = %d, want 1", len(report.Nodes))
+	}
+	dns, ok := report.Nodes[0].ExtraParams["_mihomo_dns"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing _mihomo_dns: %+v", report.Nodes[0].ExtraParams)
+	}
+	if _, exists := dns["listen"]; exists {
+		t.Fatalf("dns listen should not be preserved: %+v", dns)
+	}
+	nameservers, ok := dns["nameserver"].([]any)
+	if !ok || len(nameservers) != 2 || nameservers[0] != "https://doh.pub/dns-query" {
+		t.Fatalf("unexpected nameservers: %+v", dns["nameserver"])
+	}
+}
+
 func TestParseClashYAMLHysteria(t *testing.T) {
 	content := `
 proxies:

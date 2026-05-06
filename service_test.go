@@ -1,6 +1,7 @@
 package main
 
 import (
+	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -885,6 +886,62 @@ func TestRunCheckFallsBackToTransportWhenProxyIsUnknown(t *testing.T) {
 	}
 	if got.ProxyStatus != "unknown" {
 		t.Fatalf("proxy status = %s, want unknown", got.ProxyStatus)
+	}
+}
+
+func TestCheckTransportUsesSubscriptionDoHForEntryProbe(t *testing.T) {
+	store, service := newTestSubscriptionService(t)
+	cache := NewResultCache()
+	checkService := NewCheckService(store, cache, service.config)
+
+	node := NodeRecord{
+		ID:       1,
+		Name:     "DNS Node",
+		Server:   "sanwang.woainilzr.com",
+		Port:     49501,
+		Protocol: "anytls",
+		ExtraParams: map[string]any{
+			"_mihomo_dns": map[string]any{
+				"nameserver": []any{"https://dns.alidns.com/dns-query"},
+			},
+		},
+	}
+
+	originalTransport := httpRoundTripper
+	httpRoundTripper = roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Body: io.NopCloser(strings.NewReader(`{
+				"Status": 0,
+				"Answer": [
+					{"type": 5, "data": "sanwang.woainiliz.com."},
+					{"type": 1, "data": "13.231.111.214"}
+				]
+			}`)),
+			Request: r,
+		}, nil
+	})
+	defer func() {
+		httpRoundTripper = originalTransport
+	}()
+
+	var dialedAddress string
+	originalDial := netDialTimeout
+	netDialTimeout = func(network, address string, timeout time.Duration) (net.Conn, error) {
+		dialedAddress = address
+		return nil, timeoutStubError{}
+	}
+	defer func() {
+		netDialTimeout = originalDial
+	}()
+
+	result := checkService.checkTransport(node)
+	if dialedAddress != "13.231.111.214:49501" {
+		t.Fatalf("dialed address = %q, want resolved IP", dialedAddress)
+	}
+	if result.Status != "timeout" {
+		t.Fatalf("status = %s, want timeout", result.Status)
 	}
 }
 

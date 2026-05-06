@@ -9,6 +9,7 @@
 - SQLite 本地持久化订阅、节点和检测结果
 - 默认每 6 分钟自动检测节点延迟
 - 支持可选 Mihomo 真实代理测速，避免只测入口导致 HY2/TUIC/Hysteria 等节点误判
+- 会复用 Clash 订阅里的 `dns` 配置解析节点入口域名，减少 VPS 系统 DNS 与客户端 DNS 不一致导致的离线误判
 - 前端可手动触发全部测速或单节点测速
 - 手动测速有后端去重和冷却，多个客户同时点击不会重复开启多轮检测
 
@@ -44,6 +45,8 @@ check:
 ```
 
 如果没有安装 Mihomo，程序会自动降级为原来的 TCP 入口探活。
+
+如果订阅是 Clash YAML，程序会保存其中的 `dns.nameserver`、`proxy-server-nameserver`、`fallback` 和 `default-nameserver`，用于 TCP 入口探活和 Mihomo 真实代理测速的域名解析。HTTP DoH 和本地/内网 DoH 地址会被拒绝，只使用安全的 HTTPS DoH 或普通 DNS 服务器。
 
 订阅链接单独放在根目录 `subscriptions.yaml`：
 
@@ -83,16 +86,16 @@ go run .
 发布页会提供按系统和 CPU 架构打好的 `.tar.gz` 包，例如：
 
 ```text
-vps-monitor_0.1.0_linux_amd64.tar.gz
-vps-monitor_0.1.0_linux_arm64.tar.gz
-vps-monitor_0.1.0_darwin_arm64.tar.gz
+vps-monitor_0.2.3_linux_amd64.tar.gz
+vps-monitor_0.2.3_linux_arm64.tar.gz
+vps-monitor_0.2.3_darwin_arm64.tar.gz
 ```
 
 下载后解压：
 
 ```bash
-tar -xzf vps-monitor_0.1.0_linux_amd64.tar.gz
-cd vps-monitor_0.1.0_linux_amd64
+tar -xzf vps-monitor_0.2.3_linux_amd64.tar.gz
+cd vps-monitor_0.2.3_linux_amd64
 cp config.yaml.example config.yaml
 cp subscriptions.yaml.example subscriptions.yaml
 ./vps-monitor
@@ -123,8 +126,8 @@ TARGET_OS=linux TARGET_ARCH=amd64 npm run package:release
 创建 GitHub Release：
 
 ```bash
-git tag v0.1.0
-git push origin v0.1.0
+git tag v0.2.3
+git push origin v0.2.3
 ```
 
 推送 tag 后，GitHub Actions 会自动构建 Linux/macOS 的 amd64/arm64 tarball 并上传到 release。
