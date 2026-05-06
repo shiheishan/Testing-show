@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.3] - 2026-05-06
+
+### Fixed
+
+- Resolved subscription-provided DNS servers during VPS entry checks so nodes with provider-specific DoH records can be tested without manually pinning IP addresses.
+- Passed subscription DNS settings into Mihomo proxy delay checks, including per-DNS batching for mixed subscription imports.
+- Blocked insecure or local DoH endpoints from subscription DNS configs while preserving HTTPS DoH providers such as AliDNS and DNSPod.
+
 ## [0.2.2] - 2026-05-05
 
 ### Fixed
