@@ -86,16 +86,16 @@ go run .
 发布页会提供按系统和 CPU 架构打好的 `.tar.gz` 包，例如：
 
 ```text
-vps-monitor_0.2.3_linux_amd64.tar.gz
-vps-monitor_0.2.3_linux_arm64.tar.gz
-vps-monitor_0.2.3_darwin_arm64.tar.gz
+vps-monitor_0.2.4_linux_amd64.tar.gz
+vps-monitor_0.2.4_linux_arm64.tar.gz
+vps-monitor_0.2.4_darwin_arm64.tar.gz
 ```
 
 下载后解压：
 
 ```bash
-tar -xzf vps-monitor_0.2.3_linux_amd64.tar.gz
-cd vps-monitor_0.2.3_linux_amd64
+tar -xzf vps-monitor_0.2.4_linux_amd64.tar.gz
+cd vps-monitor_0.2.4_linux_amd64
 cp config.yaml.example config.yaml
 cp subscriptions.yaml.example subscriptions.yaml
 ./vps-monitor
@@ -126,8 +126,8 @@ TARGET_OS=linux TARGET_ARCH=amd64 npm run package:release
 创建 GitHub Release：
 
 ```bash
-git tag v0.2.3
-git push origin v0.2.3
+git tag v0.2.4
+git push origin v0.2.4
 ```
 
 推送 tag 后，GitHub Actions 会自动构建 Linux/macOS 的 amd64/arm64 tarball 并上传到 release。
