@@ -40,6 +40,11 @@ check:
   proxy_enabled: true
   mihomo_path: /usr/local/bin/mihomo
   proxy_url: https://www.gstatic.com/generate_204
+  # 可选：配置多个真实代理测速目标，任意一个目标成功即认为代理可用。
+  proxy_urls:
+    - https://www.gstatic.com/generate_204
+    - https://cp.cloudflare.com/generate_204
+    - https://www.apple.com/library/test/success.html
   proxy_concurrency: 10
   proxy_warmup: true
 ```

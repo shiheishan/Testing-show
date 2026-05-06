@@ -21,7 +21,7 @@ import (
 
 type MihomoDelayRunner struct {
 	path         string
-	delayURL     string
+	delayURLs    []string
 	startTimeout time.Duration
 	concurrency  int
 	warmup       bool
@@ -49,10 +49,7 @@ func NewProxyDelayRunner(config Config) ProxyDelayRunner {
 	if path == "" {
 		return unavailableProxyDelayRunner{message: "未找到 mihomo、clash-meta 或 clash，可安装 Mihomo 或配置 check.mihomo_path 启用真实代理测速"}
 	}
-	delayURL := strings.TrimSpace(config.ProxyCheckURL)
-	if delayURL == "" {
-		delayURL = "https://www.gstatic.com/generate_204"
-	}
+	delayURLs := normalizeProxyCheckURLs(config.ProxyCheckURL, config.ProxyCheckURLs)
 	startTimeout := config.MihomoStartTimeout
 	if startTimeout <= 0 {
 		startTimeout = 8 * time.Second
@@ -63,7 +60,7 @@ func NewProxyDelayRunner(config Config) ProxyDelayRunner {
 	}
 	return &MihomoDelayRunner{
 		path:         path,
-		delayURL:     delayURL,
+		delayURLs:    delayURLs,
 		startTimeout: startTimeout,
 		concurrency:  concurrency,
 		warmup:       config.ProxyCheckWarmup,
@@ -271,7 +268,7 @@ func (r *MihomoDelayRunner) runCandidateBatch(candidates []mihomoProxyCandidate,
 		go func(nodeID int, proxyName string) {
 			defer wg.Done()
 			sem <- struct{}{}
-			result := probeMihomoDelayWithWarmup(client, baseURL, proxyName, r.delayURL, timeout, r.warmup)
+			result := probeMihomoDelayWithWarmup(client, baseURL, proxyName, r.delayURLs, timeout, r.warmup)
 			<-sem
 			mu.Lock()
 			results[nodeID] = result
@@ -367,14 +364,38 @@ func probeMihomoDelayWithWarmup(
 	client *http.Client,
 	baseURL string,
 	proxyName string,
-	targetURL string,
+	targetURLs []string,
 	timeout time.Duration,
 	warmup bool,
 ) ProbeResult {
-	if warmup {
-		_ = probeMihomoDelay(client, baseURL, proxyName, targetURL, timeout)
+	targetURLs = normalizeProxyCheckURLs("", targetURLs)
+	if len(targetURLs) == 1 {
+		if warmup {
+			_ = probeMihomoDelay(client, baseURL, proxyName, targetURLs[0], timeout)
+		}
+		return probeMihomoDelay(client, baseURL, proxyName, targetURLs[0], timeout)
 	}
-	return probeMihomoDelay(client, baseURL, proxyName, targetURL, timeout)
+
+	failures := make([]string, 0, len(targetURLs))
+	finalStatus := "offline"
+	for _, targetURL := range targetURLs {
+		if warmup {
+			_ = probeMihomoDelay(client, baseURL, proxyName, targetURL, timeout)
+		}
+		result := probeMihomoDelay(client, baseURL, proxyName, targetURL, timeout)
+		if result.Status == "online" {
+			return result
+		}
+		if result.Status == "timeout" {
+			finalStatus = "timeout"
+		}
+		message := strings.TrimSpace(result.Message)
+		if message == "" {
+			message = result.Status
+		}
+		failures = append(failures, fmt.Sprintf("%s => %s", targetURL, message))
+	}
+	return ProbeResult{Status: finalStatus, Message: strings.Join(failures, "；")}
 }
 
 func probeMihomoDelay(client *http.Client, baseURL string, proxyName string, targetURL string, timeout time.Duration) ProbeResult {

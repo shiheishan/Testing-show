@@ -16,6 +16,11 @@ check:
   # TCP 探活只做入口诊断；如果机器上能找到 mihomo，则用真实代理 delay 作为主状态。
   proxy_enabled: true
   proxy_url: https://www.gstatic.com/generate_204
+  # 可选：配置多个真实代理测速目标。任意一个目标成功即认为代理可用。
+  # proxy_urls:
+  #   - https://www.gstatic.com/generate_204
+  #   - https://cp.cloudflare.com/generate_204
+  #   - https://www.apple.com/library/test/success.html
   # 真实代理测速比 TCP 探活重，单独限流，避免小 VPS 同时压太多节点。
   proxy_concurrency: 10
   # 先跑一次预热请求，再记录第二次测速，降低冷握手对延迟的影响。

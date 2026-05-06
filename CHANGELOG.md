@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.2.5] - 2026-05-06
+
+### Added
+
+- Added `check.proxy_urls` so Mihomo real proxy checks can try multiple target URLs and mark a node online if any target succeeds.
+
 ## [0.2.4] - 2026-05-06
 
 ### Fixed

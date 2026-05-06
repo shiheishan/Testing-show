@@ -21,6 +21,7 @@ type Config struct {
 	ManualCheckCooldown         time.Duration
 	ProxyCheckEnabled           bool
 	ProxyCheckURL               string
+	ProxyCheckURLs              []string
 	ProxyCheckConcurrency       int
 	ProxyCheckWarmup            bool
 	MihomoPath                  string
@@ -109,6 +110,9 @@ func LoadConfig(configPath string) (Config, error) {
 		if value := getString(root, "check", "proxy_url"); value != "" {
 			cfg.ProxyCheckURL = value
 		}
+		if values := getStringList(root, "check", "proxy_urls"); len(values) > 0 {
+			cfg.ProxyCheckURLs = values
+		}
 		if value := getInt(root, "check", "proxy_concurrency"); value != 0 {
 			cfg.ProxyCheckConcurrency = value
 		}
@@ -151,6 +155,7 @@ func LoadConfig(configPath string) (Config, error) {
 	overrideDuration(&cfg.ManualCheckCooldown, "MANUAL_CHECK_COOLDOWN")
 	overrideBool(&cfg.ProxyCheckEnabled, "PROXY_CHECK_ENABLED")
 	overrideString(&cfg.ProxyCheckURL, "PROXY_CHECK_URL")
+	overrideStringList(&cfg.ProxyCheckURLs, "PROXY_CHECK_URLS")
 	overrideInt(&cfg.ProxyCheckConcurrency, "PROXY_CHECK_CONCURRENCY")
 	overrideBool(&cfg.ProxyCheckWarmup, "PROXY_CHECK_WARMUP")
 	overrideString(&cfg.MihomoPath, "MIHOMO_PATH")
@@ -186,6 +191,8 @@ func LoadConfig(configPath string) (Config, error) {
 	if cfg.ManualCheckCooldown < 0 {
 		cfg.ManualCheckCooldown = 0
 	}
+	cfg.ProxyCheckURLs = normalizeProxyCheckURLs(cfg.ProxyCheckURL, cfg.ProxyCheckURLs)
+	cfg.ProxyCheckURL = cfg.ProxyCheckURLs[0]
 	if strings.TrimSpace(cfg.ProxyCheckURL) == "" {
 		cfg.ProxyCheckURL = "https://www.gstatic.com/generate_204"
 	}
@@ -219,6 +226,14 @@ func overrideString(target *string, key string) {
 	if value := strings.TrimSpace(os.Getenv(key)); value != "" {
 		*target = value
 	}
+}
+
+func overrideStringList(target *[]string, key string) {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return
+	}
+	*target = splitStringList(raw)
 }
 
 func overrideInt(target *int, key string) {
@@ -294,6 +309,7 @@ func parseSimpleYAML(path string) (yamlNode, error) {
 	lines := strings.Split(string(content), "\n")
 	var currentSection string
 	var currentItem yamlNode
+	var currentSectionListKey string
 
 	for _, rawLine := range lines {
 		line := strings.TrimRight(rawLine, "\r")
@@ -310,6 +326,7 @@ func parseSimpleYAML(path string) (yamlNode, error) {
 		case 0:
 			currentSection = ""
 			currentItem = nil
+			currentSectionListKey = ""
 
 			parts := strings.SplitN(trimmed, ":", 2)
 			if len(parts) != 2 {
@@ -325,6 +342,7 @@ func parseSimpleYAML(path string) (yamlNode, error) {
 			root[key] = parseScalar(value)
 
 		case 2:
+			currentSectionListKey = ""
 			if currentSection == "" {
 				return nil, fmt.Errorf("invalid indentation: %s", line)
 			}
@@ -366,12 +384,26 @@ func parseSimpleYAML(path string) (yamlNode, error) {
 			key := strings.TrimSpace(parts[0])
 			value := strings.TrimSpace(parts[1])
 			if value == "" {
-				section[key] = yamlNode{}
+				section[key] = []any{}
+				currentSectionListKey = key
 				continue
 			}
 			section[key] = parseScalar(value)
 
 		case 4:
+			if currentItem == nil && currentSectionListKey != "" {
+				section, ok := root[currentSection].(yamlNode)
+				if !ok {
+					return nil, fmt.Errorf("%s must be an object", currentSection)
+				}
+				if !strings.HasPrefix(trimmed, "- ") {
+					return nil, fmt.Errorf("invalid list item indentation: %s", line)
+				}
+				list, _ := section[currentSectionListKey].([]any)
+				list = append(list, parseScalar(strings.TrimSpace(strings.TrimPrefix(trimmed, "- "))))
+				section[currentSectionListKey] = list
+				continue
+			}
 			if currentItem == nil {
 				return nil, fmt.Errorf("invalid list item indentation: %s", line)
 			}
@@ -435,6 +467,55 @@ func getString(root yamlNode, keys ...string) string {
 		return value
 	}
 	return ""
+}
+
+func getStringList(root yamlNode, keys ...string) []string {
+	value := getNested(root, keys...)
+	switch v := value.(type) {
+	case []any:
+		items := make([]string, 0, len(v))
+		for _, item := range v {
+			if text := strings.TrimSpace(asString(item)); text != "" {
+				items = append(items, text)
+			}
+		}
+		return dedupeStrings(items)
+	case string:
+		return splitStringList(v)
+	default:
+		return nil
+	}
+}
+
+func splitStringList(raw string) []string {
+	parts := strings.FieldsFunc(raw, func(r rune) bool {
+		return r == ',' || r == '\n'
+	})
+	items := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if text := strings.TrimSpace(part); text != "" {
+			items = append(items, text)
+		}
+	}
+	return dedupeStrings(items)
+}
+
+func normalizeProxyCheckURLs(legacyURL string, urls []string) []string {
+	items := make([]string, 0, len(urls)+1)
+	for _, item := range urls {
+		if text := strings.TrimSpace(item); text != "" {
+			items = append(items, text)
+		}
+	}
+	if len(items) == 0 {
+		if text := strings.TrimSpace(legacyURL); text != "" {
+			items = append(items, text)
+		}
+	}
+	if len(items) == 0 {
+		items = append(items, "https://www.gstatic.com/generate_204")
+	}
+	return dedupeStrings(items)
 }
 
 func getInt(root yamlNode, keys ...string) int {

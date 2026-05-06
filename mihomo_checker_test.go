@@ -242,8 +242,8 @@ func TestNewProxyDelayRunnerUsesProxyCheckSettings(t *testing.T) {
 	if got.warmup {
 		t.Fatal("warmup = true, want false")
 	}
-	if got.delayURL != "https://example.com/generate_204" {
-		t.Fatalf("delayURL = %q", got.delayURL)
+	if len(got.delayURLs) != 1 || got.delayURLs[0] != "https://example.com/generate_204" {
+		t.Fatalf("delayURLs = %+v", got.delayURLs)
 	}
 	if got.path != "/opt/mihomo" {
 		t.Fatalf("path = %q", got.path)
@@ -371,7 +371,7 @@ func TestProbeMihomoDelayWithWarmupRecordsSecondResult(t *testing.T) {
 		}, nil
 	})}
 
-	result := probeMihomoDelayWithWarmup(client, "http://mihomo.local", "warm-node", "https://example.com/generate_204", 5*time.Second, true)
+	result := probeMihomoDelayWithWarmup(client, "http://mihomo.local", "warm-node", []string{"https://example.com/generate_204"}, 5*time.Second, true)
 	if calls != 2 {
 		t.Fatalf("calls = %d, want 2", calls)
 	}
@@ -395,12 +395,47 @@ func TestProbeMihomoDelayWithWarmupDisabledRecordsFirstResult(t *testing.T) {
 		}, nil
 	})}
 
-	result := probeMihomoDelayWithWarmup(client, "http://mihomo.local", "cold-node", "https://example.com/generate_204", 5*time.Second, false)
+	result := probeMihomoDelayWithWarmup(client, "http://mihomo.local", "cold-node", []string{"https://example.com/generate_204"}, 5*time.Second, false)
 	if calls != 1 {
 		t.Fatalf("calls = %d, want 1", calls)
 	}
 	if result.LatencyMS == nil || *result.LatencyMS != 333 {
 		t.Fatalf("latency = %v, want 333", result.LatencyMS)
+	}
+}
+
+func TestProbeMihomoDelayWithMultipleURLsAcceptsFirstSuccess(t *testing.T) {
+	calls := []string{}
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		calls = append(calls, r.URL.Query().Get("url"))
+		if strings.Contains(r.URL.RawQuery, "first.example") {
+			return &http.Response{
+				StatusCode: http.StatusServiceUnavailable,
+				Status:     "503 Service Unavailable",
+				Body:       io.NopCloser(strings.NewReader(`{"message":"blocked"}`)),
+				Request:    r,
+			}, nil
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Body:       io.NopCloser(strings.NewReader(`{"delay":88}`)),
+			Request:    r,
+		}, nil
+	})}
+
+	result := probeMihomoDelayWithWarmup(client, "http://mihomo.local", "multi-node", []string{
+		"https://first.example/generate_204",
+		"https://second.example/generate_204",
+	}, 5*time.Second, false)
+	if result.Status != "online" {
+		t.Fatalf("status = %s, want online; result = %+v", result.Status, result)
+	}
+	if result.LatencyMS == nil || *result.LatencyMS != 88 {
+		t.Fatalf("latency = %v, want 88", result.LatencyMS)
+	}
+	if len(calls) != 2 {
+		t.Fatalf("calls = %+v, want two target attempts", calls)
 	}
 }
 

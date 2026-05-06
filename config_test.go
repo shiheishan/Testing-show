@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -127,6 +128,9 @@ check:
 	if cfg.ProxyCheckURL != "https://example.com/health" {
 		t.Fatalf("ProxyCheckURL = %q", cfg.ProxyCheckURL)
 	}
+	if len(cfg.ProxyCheckURLs) != 1 || cfg.ProxyCheckURLs[0] != "https://example.com/health" {
+		t.Fatalf("ProxyCheckURLs = %+v", cfg.ProxyCheckURLs)
+	}
 	if cfg.ProxyCheckConcurrency != 7 {
 		t.Fatalf("ProxyCheckConcurrency = %d, want 7", cfg.ProxyCheckConcurrency)
 	}
@@ -138,6 +142,37 @@ check:
 	}
 	if cfg.MihomoStartTimeout != 3*time.Second {
 		t.Fatalf("MihomoStartTimeout = %v, want 3s", cfg.MihomoStartTimeout)
+	}
+}
+
+func TestLoadConfigParsesProxyCheckURLList(t *testing.T) {
+	tempDir := t.TempDir()
+	configPath := filepath.Join(tempDir, "config.yaml")
+	content := `
+check:
+  proxy_urls:
+    - https://www.gstatic.com/generate_204
+    - https://cp.cloudflare.com/generate_204
+    - https://www.apple.com/library/test/success.html
+`
+	if err := os.WriteFile(configPath, []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile error: %v", err)
+	}
+
+	cfg, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("LoadConfig error: %v", err)
+	}
+	want := []string{
+		"https://www.gstatic.com/generate_204",
+		"https://cp.cloudflare.com/generate_204",
+		"https://www.apple.com/library/test/success.html",
+	}
+	if strings.Join(cfg.ProxyCheckURLs, ",") != strings.Join(want, ",") {
+		t.Fatalf("ProxyCheckURLs = %+v, want %+v", cfg.ProxyCheckURLs, want)
+	}
+	if cfg.ProxyCheckURL != want[0] {
+		t.Fatalf("ProxyCheckURL = %q, want first list item", cfg.ProxyCheckURL)
 	}
 }
 
