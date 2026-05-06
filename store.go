@@ -661,9 +661,10 @@ func (s *Store) runSQLite(jsonOutput bool, sql string) ([]byte, error) {
 		args = append(args, "-json")
 	}
 	script := "PRAGMA foreign_keys = ON;\n" + sql
-	args = append(args, s.dbPath, script)
+	args = append(args, s.dbPath)
 
 	cmd := exec.Command("sqlite3", args...)
+	cmd.Stdin = strings.NewReader(script)
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 	cmd.Stdout = &stdout

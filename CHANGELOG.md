@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.2.4] - 2026-05-06
+
+### Fixed
+
+- Fixed large subscription refreshes failing with `fork/exec /usr/bin/sqlite3: argument list too long` after subscription DNS metadata increased node payload size.
+
 ## [0.2.3] - 2026-05-06
 
 ### Fixed
