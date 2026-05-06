@@ -107,10 +107,39 @@ func (r *MihomoDelayRunner) Check(nodes []NodeRecord, timeout time.Duration) (ma
 	if len(candidates) == 0 {
 		return results, nil
 	}
-	for nodeID, result := range r.checkCandidates(candidates, timeout) {
-		results[nodeID] = result
+	for _, group := range groupMihomoCandidatesByDNS(candidates) {
+		for nodeID, result := range r.checkCandidates(group, timeout) {
+			results[nodeID] = result
+		}
 	}
 	return results, nil
+}
+
+func groupMihomoCandidatesByDNS(candidates []mihomoProxyCandidate) [][]mihomoProxyCandidate {
+	indexes := map[string]int{}
+	groups := make([][]mihomoProxyCandidate, 0)
+	for _, candidate := range candidates {
+		key := mihomoDNSKey(candidate.dns)
+		index, ok := indexes[key]
+		if !ok {
+			index = len(groups)
+			indexes[key] = index
+			groups = append(groups, []mihomoProxyCandidate{})
+		}
+		groups[index] = append(groups[index], candidate)
+	}
+	return groups
+}
+
+func mihomoDNSKey(dns map[string]any) string {
+	if len(dns) == 0 {
+		return ""
+	}
+	content, err := json.Marshal(dns)
+	if err != nil {
+		return fmt.Sprintf("%p", dns)
+	}
+	return string(content)
 }
 
 func (r *MihomoDelayRunner) checkCandidates(candidates []mihomoProxyCandidate, timeout time.Duration) map[int]ProbeResult {

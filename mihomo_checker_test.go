@@ -287,6 +287,36 @@ func TestWriteMihomoConfigIncludesSubscriptionDNS(t *testing.T) {
 	}
 }
 
+func TestGroupMihomoCandidatesByDNS(t *testing.T) {
+	firstDNS := map[string]any{"nameserver": []any{"https://dns.alidns.com/dns-query"}}
+	secondDNS := map[string]any{"nameserver": []any{"https://doh.pub/dns-query"}}
+	groups := groupMihomoCandidatesByDNS([]mihomoProxyCandidate{
+		{nodeID: 1, dns: firstDNS},
+		{nodeID: 2, dns: secondDNS},
+		{nodeID: 3, dns: firstDNS},
+		{nodeID: 4},
+	})
+
+	if len(groups) != 3 {
+		t.Fatalf("groups = %d, want 3", len(groups))
+	}
+	assertCandidateGroup(t, groups[0], []int{1, 3})
+	assertCandidateGroup(t, groups[1], []int{2})
+	assertCandidateGroup(t, groups[2], []int{4})
+}
+
+func assertCandidateGroup(t *testing.T, candidates []mihomoProxyCandidate, want []int) {
+	t.Helper()
+	if len(candidates) != len(want) {
+		t.Fatalf("group length = %d, want %d", len(candidates), len(want))
+	}
+	for index, id := range want {
+		if candidates[index].nodeID != id {
+			t.Fatalf("group[%d] = %d, want %d", index, candidates[index].nodeID, id)
+		}
+	}
+}
+
 func TestProbeMihomoDelayIncludesErrorBody(t *testing.T) {
 	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		return &http.Response{

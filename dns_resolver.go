@@ -77,7 +77,10 @@ func lookupHostWithNameserver(host string, nameserver string, timeout time.Durat
 	if nameserver == "" {
 		return nil, nil
 	}
-	if strings.HasPrefix(nameserver, "https://") || strings.HasPrefix(nameserver, "http://") {
+	if strings.HasPrefix(nameserver, "http://") {
+		return nil, fmt.Errorf("insecure doh nameserver %q is not supported", nameserver)
+	}
+	if strings.HasPrefix(nameserver, "https://") {
 		return lookupHostWithDoH(host, nameserver, timeout)
 	}
 	return lookupHostWithUDP(host, nameserver, timeout)
@@ -87,6 +90,9 @@ func lookupHostWithDoH(host string, endpoint string, timeout time.Duration) ([]s
 	endpoint = normalizeDoHJSONEndpoint(endpoint)
 	requestURL, err := url.Parse(endpoint)
 	if err != nil {
+		return nil, err
+	}
+	if err := validateDoHEndpoint(requestURL); err != nil {
 		return nil, err
 	}
 	query := requestURL.Query()
@@ -128,6 +134,28 @@ func normalizeDoHJSONEndpoint(endpoint string) string {
 		return strings.TrimSuffix(strings.TrimSuffix(trimmed, "/dns-query"), "/resolve") + "/resolve"
 	}
 	return strings.TrimSuffix(trimmed, "/dns-query") + "/dns-query"
+}
+
+func validateDoHEndpoint(endpoint *url.URL) error {
+	if endpoint == nil || endpoint.Scheme != "https" || strings.TrimSpace(endpoint.Hostname()) == "" {
+		return fmt.Errorf("invalid doh endpoint")
+	}
+	if isBlockedDoHHost(endpoint.Hostname()) {
+		return fmt.Errorf("blocked doh endpoint host %q", endpoint.Hostname())
+	}
+	return nil
+}
+
+func isBlockedDoHHost(host string) bool {
+	host = strings.ToLower(strings.Trim(strings.TrimSpace(host), "[]"))
+	if host == "localhost" || strings.HasSuffix(host, ".localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return false
+	}
+	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified()
 }
 
 func ipsFromDNSAnswers(answers []dnsAnswer) []string {

@@ -66,6 +66,29 @@ func TestNormalizeDoHJSONEndpointMapsKnownProviders(t *testing.T) {
 	}
 }
 
+func TestLookupHostWithNameserverRejectsInsecureDoH(t *testing.T) {
+	if _, err := lookupHostWithNameserver("example.com", "http://127.0.0.1/dns-query", time.Second); err == nil {
+		t.Fatal("expected insecure DoH nameserver to be rejected")
+	}
+}
+
+func TestValidateDoHEndpointBlocksLocalHosts(t *testing.T) {
+	tests := []string{
+		"https://127.0.0.1/dns-query",
+		"https://10.0.0.1/dns-query",
+		"https://localhost/dns-query",
+	}
+	for _, raw := range tests {
+		endpoint, err := http.NewRequest(http.MethodGet, raw, nil)
+		if err != nil {
+			t.Fatalf("NewRequest(%q) error: %v", raw, err)
+		}
+		if err := validateDoHEndpoint(endpoint.URL); err == nil {
+			t.Fatalf("expected %q to be blocked", raw)
+		}
+	}
+}
+
 func TestMihomoNameserversPrefersProxyServerNameserver(t *testing.T) {
 	got := mihomoNameservers(map[string]any{
 		"proxy-server-nameserver": []any{"https://proxy.example/dns-query"},
