@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"net"
+	"net/http"
 	"os"
 	"os/exec"
 )
@@ -17,6 +18,8 @@ var (
 	osWriteFile        = os.WriteFile
 	osRemoveAll        = os.RemoveAll
 	contextBackground  = context.Background
+	contextWithTimeout = context.WithTimeout
+	httpRoundTripper   = http.DefaultTransport
 )
 
 func isTimeoutError(err error) bool {

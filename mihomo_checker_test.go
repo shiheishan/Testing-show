@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -248,6 +250,40 @@ func TestNewProxyDelayRunnerUsesProxyCheckSettings(t *testing.T) {
 	}
 	if got.startTimeout != 2*time.Second {
 		t.Fatalf("startTimeout = %v, want 2s", got.startTimeout)
+	}
+}
+
+func TestWriteMihomoConfigIncludesSubscriptionDNS(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	proxies := []map[string]any{
+		{"name": "node-a", "type": "anytls", "server": "example.com", "port": 443, "password": "secret"},
+	}
+	dns := map[string]any{
+		"enabled":       false,
+		"listen":        "0.0.0.0:1053",
+		"enhanced-mode": "fake-ip",
+		"nameserver":    []any{"https://doh.pub/dns-query", "https://dns.alidns.com/dns-query"},
+	}
+
+	if err := writeMihomoConfig(configPath, 7890, 9090, proxies, dns); err != nil {
+		t.Fatalf("writeMihomoConfig error: %v", err)
+	}
+	raw, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("ReadFile error: %v", err)
+	}
+	content := string(raw)
+	if !strings.Contains(content, "dns:") || !strings.Contains(content, "https://doh.pub/dns-query") {
+		t.Fatalf("expected dns config in generated mihomo config:\n%s", content)
+	}
+	if strings.Contains(content, "0.0.0.0:1053") {
+		t.Fatalf("dns listen should be stripped from generated config:\n%s", content)
+	}
+	if !strings.Contains(content, "enabled: true") {
+		t.Fatalf("dns should be enabled in generated config:\n%s", content)
+	}
+	if !strings.Contains(content, "proxy-server-nameserver:") {
+		t.Fatalf("dns should apply nameservers to proxy server resolution:\n%s", content)
 	}
 }
 

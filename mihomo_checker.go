@@ -35,6 +35,7 @@ type mihomoProxyCandidate struct {
 	nodeID int
 	name   string
 	proxy  map[string]any
+	dns    map[string]any
 }
 
 func NewProxyDelayRunner(config Config) ProxyDelayRunner {
@@ -100,6 +101,7 @@ func (r *MihomoDelayRunner) Check(nodes []NodeRecord, timeout time.Duration) (ma
 			nodeID: node.ID,
 			name:   asString(proxy["name"]),
 			proxy:  proxy,
+			dns:    nodeMihomoDNS(node),
 		})
 	}
 	if len(candidates) == 0 {
@@ -187,7 +189,7 @@ func (r *MihomoDelayRunner) runCandidateBatch(candidates []mihomoProxyCandidate,
 	}
 
 	configPath := filepath.Join(tempDir, "config.yaml")
-	if err := writeMihomoConfig(configPath, mixedPort, apiPort, proxies); err != nil {
+	if err := writeMihomoConfig(configPath, mixedPort, apiPort, proxies, mihomoDNSFromCandidates(candidates)); err != nil {
 		return nil, err
 	}
 
@@ -251,7 +253,7 @@ func (r *MihomoDelayRunner) runCandidateBatch(candidates []mihomoProxyCandidate,
 	return results, nil
 }
 
-func writeMihomoConfig(path string, mixedPort int, apiPort int, proxies []map[string]any) error {
+func writeMihomoConfig(path string, mixedPort int, apiPort int, proxies []map[string]any, dns map[string]any) error {
 	names := make([]string, 0, len(proxies))
 	for _, proxy := range proxies {
 		names = append(names, asString(proxy["name"]))
@@ -272,11 +274,38 @@ func writeMihomoConfig(path string, mixedPort int, apiPort int, proxies []map[st
 		},
 		"rules": []string{"MATCH,vps-monitor"},
 	}
+	if len(dns) > 0 {
+		payload["dns"] = sanitizeMihomoDNS(dns)
+	}
 	content, err := yaml.Marshal(payload)
 	if err != nil {
 		return err
 	}
 	return osWriteFile(path, content, 0o600)
+}
+
+func mihomoDNSFromCandidates(candidates []mihomoProxyCandidate) map[string]any {
+	for _, candidate := range candidates {
+		if len(candidate.dns) > 0 {
+			return candidate.dns
+		}
+	}
+	return nil
+}
+
+func sanitizeMihomoDNS(dns map[string]any) map[string]any {
+	clean := cloneYAMLMap(dns)
+	if len(clean) == 0 {
+		return nil
+	}
+	clean["enabled"] = true
+	delete(clean, "listen")
+	if _, ok := clean["proxy-server-nameserver"]; !ok {
+		if nameserver, ok := clean["nameserver"]; ok {
+			clean["proxy-server-nameserver"] = cloneYAMLValue(nameserver)
+		}
+	}
+	return clean
 }
 
 func waitMihomoController(baseURL string, timeout time.Duration) error {

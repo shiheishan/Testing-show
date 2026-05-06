@@ -21,6 +21,7 @@ type ImportResult struct {
 	Diagnostics   []ImportDiagnostic `json:"diagnostics,omitempty"`
 	Summary       string             `json:"summary"`
 	Nodes         []ParsedNode       `json:"-"`
+	MihomoDNS     map[string]any     `json:"-"`
 }
 
 type ImportDiagnostic struct {
@@ -53,6 +54,7 @@ func parseClashYAMLDetailed(content string) (ImportResult, error) {
 		report.addDiagnostic(ImportDiagnostic{Code: "invalid_yaml", Message: "YAML 格式无效"})
 		return finalizeImportResult(report, errNoSupportedNodes)
 	}
+	report.MihomoDNS = extractMihomoDNS(root)
 
 	proxiesValue, ok := root["proxies"]
 	if !ok || proxiesValue == nil {
@@ -83,6 +85,7 @@ func parseClashYAMLDetailed(content string) (ImportResult, error) {
 			report.addDiagnostic(clashDiagnosticFromError(err))
 			continue
 		}
+		attachMihomoDNS(&node, report.MihomoDNS)
 		report.Nodes = append(report.Nodes, node)
 	}
 
@@ -90,6 +93,56 @@ func parseClashYAMLDetailed(content string) (ImportResult, error) {
 		return finalizeImportResult(report, errNoSupportedNodes)
 	}
 	return finalizeImportResult(report, nil)
+}
+
+func extractMihomoDNS(root map[string]any) map[string]any {
+	raw, ok := root["dns"]
+	if !ok || raw == nil {
+		return nil
+	}
+	dns, ok := raw.(map[string]any)
+	if !ok || len(dns) == 0 {
+		return nil
+	}
+	clean := cloneYAMLMap(dns)
+	delete(clean, "listen")
+	return clean
+}
+
+func attachMihomoDNS(node *ParsedNode, dns map[string]any) {
+	if node == nil || len(dns) == 0 {
+		return
+	}
+	if node.ExtraParams == nil {
+		node.ExtraParams = map[string]any{}
+	}
+	node.ExtraParams["_mihomo_dns"] = cloneYAMLMap(dns)
+}
+
+func cloneYAMLMap(input map[string]any) map[string]any {
+	if input == nil {
+		return nil
+	}
+	output := make(map[string]any, len(input))
+	for key, value := range input {
+		output[key] = cloneYAMLValue(value)
+	}
+	return output
+}
+
+func cloneYAMLValue(value any) any {
+	switch v := value.(type) {
+	case map[string]any:
+		return cloneYAMLMap(v)
+	case []any:
+		items := make([]any, len(v))
+		for i, item := range v {
+			items[i] = cloneYAMLValue(item)
+		}
+		return items
+	default:
+		return value
+	}
 }
 
 func parseURILinesDetailed(content string) (ImportResult, error) {

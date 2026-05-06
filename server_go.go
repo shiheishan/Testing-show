@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"net"
 	"net/http"
 	"net/url"
 	"path"
@@ -491,9 +492,8 @@ func (s *CheckService) RunCheck(subscriptionID *int, nodeID *int) ([]CheckResult
 
 func (s *CheckService) checkTransport(node NodeRecord) ProbeResult {
 	started := time.Now()
-	address := netJoinHostPort(node.Server, strconv.Itoa(node.Port))
-	connection, err := netDialTimeout("tcp", address, s.config.CheckTimeout)
-	if err == nil {
+	connection, address, err := s.dialNodeTransport(node)
+	if err == nil && connection != nil {
 		_ = connection.Close()
 		latency := int(time.Since(started).Milliseconds())
 		return ProbeResult{Status: "online", LatencyMS: &latency}
@@ -502,7 +502,33 @@ func (s *CheckService) checkTransport(node NodeRecord) ProbeResult {
 	if isTimeoutError(err) {
 		status = "timeout"
 	}
-	return ProbeResult{Status: status, Message: err.Error()}
+	message := err.Error()
+	if address != "" && !strings.Contains(message, address) {
+		message = fmt.Sprintf("%s: %s", address, message)
+	}
+	return ProbeResult{Status: status, Message: message}
+}
+
+func (s *CheckService) dialNodeTransport(node NodeRecord) (net.Conn, string, error) {
+	port := strconv.Itoa(node.Port)
+	address := netJoinHostPort(node.Server, port)
+	ips, resolveErr := resolveNodeServer(node, s.config.CheckTimeout)
+	if resolveErr == nil && len(ips) > 0 {
+		var lastErr error
+		for _, ip := range ips {
+			resolvedAddress := netJoinHostPort(ip, port)
+			connection, err := netDialTimeout("tcp", resolvedAddress, s.config.CheckTimeout)
+			if err == nil {
+				return connection, resolvedAddress, nil
+			}
+			lastErr = err
+		}
+		if lastErr != nil {
+			return nil, netJoinHostPort(ips[len(ips)-1], port), lastErr
+		}
+	}
+	connection, err := netDialTimeout("tcp", address, s.config.CheckTimeout)
+	return connection, address, err
 }
 
 func combineProbeResults(nodeID int, transport ProbeResult, proxy ProbeResult, checkedAt string) CheckResult {
