@@ -1099,16 +1099,21 @@ function NodeDetailModal({
               <p className="text-xs text-white/30 font-mono mt-1 break-all">{node.server}:{node.port}</p>
             </div>
           </div>
-          <div className="flex items-center gap-2 flex-shrink-0">
+          <div className="flex items-center gap-1 sm:gap-2 flex-shrink-0">
             <button
               onClick={() => onTest(node.id)}
               disabled={testing}
-              className="text-xs tracking-wider text-white/40 hover:text-white/70 transition-colors flex items-center gap-1.5 px-2 sm:px-3 py-1.5 rounded-lg hover:bg-white/5 disabled:opacity-20"
+              aria-label="测速"
+              className="text-xs tracking-wider text-white/40 hover:text-white/70 transition-colors flex items-center justify-center gap-1.5 w-11 h-11 sm:w-auto sm:h-auto sm:px-3 sm:py-1.5 rounded-lg hover:bg-white/5 disabled:opacity-20"
             >
-              <RefreshCw className={`w-3.5 h-3.5 ${testing ? "animate-spin-silk" : ""}`} />
+              <RefreshCw className={`w-4 h-4 sm:w-3.5 sm:h-3.5 ${testing ? "animate-spin-silk" : ""}`} />
               <span className="hidden sm:inline">测速</span>
             </button>
-            <button onClick={onClose} className="text-white/30 hover:text-white/60 p-1">
+            <button
+              onClick={onClose}
+              aria-label="关闭"
+              className="text-white/30 hover:text-white/60 flex items-center justify-center w-11 h-11 sm:w-auto sm:h-auto sm:p-1 rounded-lg hover:bg-white/5"
+            >
               <X className="w-5 h-5" />
             </button>
           </div>
