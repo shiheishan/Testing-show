@@ -142,9 +142,24 @@ async function apiRequest<T>(path: string, options: RequestInit = {}): Promise<T
     headers: { "Content-Type": "application/json" },
     ...options,
   });
-  const payload = await response.json();
+  const body = await response.text();
+  let payload: unknown = undefined;
+  if (body.length > 0) {
+    try {
+      payload = JSON.parse(body);
+    } catch {
+      if (!response.ok) {
+        throw new Error(`请求失败 (HTTP ${response.status})`);
+      }
+      throw new Error(`响应解析失败 (HTTP ${response.status})`);
+    }
+  }
   if (!response.ok) {
-    throw new Error(payload.message || "请求失败");
+    const message =
+      payload && typeof payload === "object" && "message" in payload && typeof (payload as { message: unknown }).message === "string"
+        ? (payload as { message: string }).message
+        : `请求失败 (HTTP ${response.status})`;
+    throw new Error(message);
   }
   return payload as T;
 }
