@@ -583,9 +583,9 @@ export default function VPSMonitorPage() {
         </div>
 
         <div className="liquid-glass rounded-2xl">
-          <div className="flex items-center justify-between px-5 py-3 border-b border-white/5">
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between sm:gap-3 px-5 py-3 border-b border-white/5">
             <span className="text-sm text-white/60">
-              节点列表{filteredNodes.length > 0 && <span className="text-white/30 ml-1">（{filteredNodes.length}）</span>}
+              节点列表{filteredNodes.length > 0 && <span className="text-white/40 ml-1">（{filteredNodes.length}）</span>}
             </span>
             <SubscriptionSelector
               subscriptions={subscriptions}
@@ -886,19 +886,19 @@ function SubscriptionSelector({
   const statusFailed = selected ? selected.status === "failed" : failedCount > 0;
 
   return (
-    <div ref={triggerRef} className="flex items-center gap-2 text-xs text-white/40">
-      <span className={`w-1.5 h-1.5 rounded-full ${statusFailed ? "bg-amber-400" : "bg-emerald-400"}`} />
-      <span className="truncate max-w-[90px]">{selected?.name ?? summary.name}</span>
-      <span className="text-white/20">·</span>
-      <span className={statusFailed ? "text-amber-300" : "text-emerald-300"}>
+    <div ref={triggerRef} className="flex items-center gap-2 text-xs text-white/55 min-w-0">
+      <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${statusFailed ? "bg-amber-400" : "bg-emerald-400"}`} />
+      <span className="truncate min-w-0 flex-1 sm:flex-none sm:max-w-[140px]">{selected?.name ?? summary.name}</span>
+      <span className="text-white/25 flex-shrink-0">·</span>
+      <span className={`flex-shrink-0 ${statusFailed ? "text-amber-300" : "text-emerald-300"}`}>
         {selected ? (selected.status === "failed" ? "失败" : "正常") : failedCount ? `${failedCount} 个异常` : "正常"}
       </span>
       <button
         onClick={handleToggle}
-        className="p-1 -mr-1 text-white/25 hover:text-white/60 transition-colors"
+        className="flex items-center justify-center w-8 h-8 -mr-2 sm:w-auto sm:h-auto sm:p-1 text-white/40 hover:text-white/70 transition-colors flex-shrink-0"
         aria-label={open ? "收起订阅栏" : "展开订阅栏"}
       >
-        <ChevronDown className={`w-3 h-3 transition-transform ${open ? "rotate-180" : ""}`} />
+        <ChevronDown className={`w-3.5 h-3.5 sm:w-3 sm:h-3 transition-transform ${open ? "rotate-180" : ""}`} />
       </button>
       {panelMounted && panelPosition && createPortal(
         <SubscriptionPanel
