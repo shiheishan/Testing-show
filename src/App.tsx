@@ -210,7 +210,7 @@ function checkMessage(status: CheckResponse["status"], total: number): string {
 
 function LatencyBadge({ latency, size = "sm" }: { latency: number | null; size?: "sm" | "lg" }) {
   if (latency === null) {
-    return <span className={`${size === "lg" ? "text-base" : "text-xs"} text-white/20 font-mono`}>--</span>;
+    return <span className={`${size === "lg" ? "text-base" : "text-xs"} text-white/35 font-mono`}>--</span>;
   }
   const color =
     latency < 50 ? "text-emerald-400"
@@ -534,7 +534,7 @@ export default function VPSMonitorPage() {
             <span className="text-sm font-medium tracking-wider text-white/90">VPS 节点监控</span>
           </div>
           <div className="flex items-center gap-4">
-            <span className="text-[10px] text-white/30 flex items-center gap-1.5">
+            <span className="text-[11px] text-white/55 flex items-center gap-1.5">
               <span className={`w-1.5 h-1.5 rounded-full ${failedSubscriptions ? "bg-amber-400" : "bg-emerald-400 animate-pulse"}`} />
               {statusMessage}
             </span>
@@ -710,7 +710,7 @@ export default function VPSMonitorPage() {
                       <span className="text-white/15">·</span>
                       <span className="truncate">{formatTime(node.last_checked)}</span>
                     </div>
-                    <div className="mt-1 text-[10px] text-white/30 truncate">
+                    <div className="mt-1 text-[11px] text-white/50 truncate">
                       {subscription?.name ?? `订阅 #${node.subscription_id}`}
                     </div>
                   </div>
@@ -733,7 +733,7 @@ export default function VPSMonitorPage() {
           {filteredNodes.length === 0 && (
             <div className="text-center py-16">
               <Server className="w-10 h-10 text-white/10 mx-auto mb-3" />
-              <p className="text-sm text-white/20">
+              <p className="text-sm text-white/45">
                 {loading ? "正在加载节点..." : searchQuery ? "未找到匹配的节点" : "暂无符合条件的节点"}
               </p>
             </div>
@@ -771,7 +771,7 @@ function StatCard({ icon: Icon, label, value, color, trend, suffix }: {
       <div className={`text-2xl font-mono font-medium ${color}`}>
         {isNumeric ? <AnimatedNumber value={value} suffix={suffix ?? ""} /> : value}
       </div>
-      {trend && <div className="text-[10px] text-white/20 mt-1">{trend}</div>}
+      {trend && <div className="text-[11px] text-white/45 mt-1">{trend}</div>}
     </div>
   );
 }
@@ -998,8 +998,8 @@ function SubscriptionPanelItem({
           {failed ? "异常" : "正常"}
         </span>
       </div>
-      <p className="text-[10px] text-white/25 mt-1 truncate font-mono">{subtitle}</p>
-      <p className="text-[10px] text-white/25 mt-0.5">{meta}</p>
+      <p className="text-[10px] text-white/45 mt-1 truncate font-mono">{subtitle}</p>
+      <p className="text-[10px] text-white/40 mt-0.5">{meta}</p>
     </button>
   );
 }
@@ -1096,7 +1096,7 @@ function NodeDetailModal({
             </div>
             <div className="min-w-0">
               <h2 className="text-lg sm:text-xl font-medium text-white/90 leading-snug break-words line-clamp-2">{node.name}</h2>
-              <p className="text-xs text-white/30 font-mono mt-1 break-all">{node.server}:{node.port}</p>
+              <p className="text-xs text-white/55 font-mono mt-1 break-all">{node.server}:{node.port}</p>
             </div>
           </div>
           <div className="flex items-center gap-1 sm:gap-2 flex-shrink-0">
@@ -1157,15 +1157,15 @@ function NodeDetailModal({
 
           <div className="liquid-glass rounded-xl p-4">
             <div className="flex items-center justify-between mb-3">
-              <span className="text-[10px] text-white/30 tracking-wider uppercase">近 1 小时延迟波形</span>
-              <span className="text-[10px] text-white/20">{history.length} 点</span>
+              <span className="text-[10px] text-white/40 tracking-wider uppercase">近 1 小时延迟波形</span>
+              <span className="text-[10px] text-white/45 tabular-nums">{history.length} 点</span>
             </div>
             {historyLoading ? (
-              <div className="h-[180px] flex items-center justify-center text-xs text-white/25">正在加载波形...</div>
+              <div className="h-[180px] flex items-center justify-center text-xs text-white/45">正在加载波形...</div>
             ) : history.length > 0 ? (
               <LatencyHistoryChart points={history} />
             ) : (
-              <div className="h-[180px] flex items-center justify-center text-xs text-white/25">暂无近 1 小时检测记录</div>
+              <div className="h-[180px] flex items-center justify-center text-xs text-white/45">暂无近 1 小时检测记录</div>
             )}
           </div>
         </div>
