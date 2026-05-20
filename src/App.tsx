@@ -437,6 +437,7 @@ export default function VPSMonitorPage() {
   }, [subscriptions]);
 
   const loadAbortRef = useRef<AbortController | null>(null);
+  const mobileTouchRef = useRef<{ x: number; y: number; moved: boolean } | null>(null);
 
   const loadData = useCallback(async (silent = false) => {
     loadAbortRef.current?.abort();
@@ -736,8 +737,36 @@ export default function VPSMonitorPage() {
               return (
                 <li
                   key={node.id}
-                  onClick={() => setDetailNodeId(node.id)}
-                  className="px-4 py-3.5 flex items-center gap-3 cursor-pointer active:bg-white/[0.04] transition-colors"
+                  role="button"
+                  tabIndex={0}
+                  aria-label={`查看 ${node.name} 详情`}
+                  onTouchStart={(event) => {
+                    const touch = event.touches[0];
+                    mobileTouchRef.current = { x: touch.clientX, y: touch.clientY, moved: false };
+                  }}
+                  onTouchMove={(event) => {
+                    const start = mobileTouchRef.current;
+                    if (!start) return;
+                    const touch = event.touches[0];
+                    if (Math.abs(touch.clientX - start.x) > 10 || Math.abs(touch.clientY - start.y) > 10) {
+                      start.moved = true;
+                    }
+                  }}
+                  onClick={() => {
+                    if (mobileTouchRef.current?.moved) {
+                      mobileTouchRef.current = null;
+                      return;
+                    }
+                    mobileTouchRef.current = null;
+                    setDetailNodeId(node.id);
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault();
+                      setDetailNodeId(node.id);
+                    }
+                  }}
+                  className="px-4 py-3.5 flex items-center gap-3 cursor-pointer active:bg-white/[0.04] transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400/40 focus-visible:ring-inset"
                 >
                   <div className={`w-10 h-10 rounded-lg ${status.bg} flex items-center justify-center border ${status.border} flex-shrink-0`}>
                     <StatusIcon className={`w-4 h-4 ${status.color}`} />
@@ -1133,8 +1162,31 @@ function NodeDetailModal({
     };
   }, [node.id]);
 
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    document.addEventListener("keydown", handleKeyDown);
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.removeEventListener("keydown", handleKeyDown);
+      document.body.style.overflow = previousOverflow;
+    };
+  }, [onClose]);
+
+  const handleBackdropClick = (event: React.MouseEvent<HTMLDivElement>) => {
+    if (event.target === event.currentTarget) onClose();
+  };
+
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-label={node.name}
+      onClick={handleBackdropClick}
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4"
+    >
       <div className="liquid-glass rounded-3xl w-full max-w-2xl max-h-[85vh] overflow-y-auto">
         <div className="p-5 sm:p-6 border-b border-white/5 flex items-start justify-between gap-3">
           <div className="flex items-start gap-3 sm:gap-4 min-w-0">
