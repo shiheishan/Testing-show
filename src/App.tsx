@@ -1191,7 +1191,8 @@ function LatencyHistoryChart({ points }: { points: CheckHistoryPoint[] }) {
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, width, height);
 
-    const padding = { top: 14, right: 16, bottom: 24, left: 42 };
+    const hasValidValues = points.some((point) => point.latency_ms != null);
+    const padding = { top: 14, right: 16, bottom: 24, left: hasValidValues ? 42 : 16 };
     const chartW = width - padding.left - padding.right;
     const chartH = height - padding.top - padding.bottom;
     const values = points.map((point) => point.latency_ms).filter((value): value is number => value != null);
@@ -1199,22 +1200,27 @@ function LatencyHistoryChart({ points }: { points: CheckHistoryPoint[] }) {
     const max = values.length ? Math.max(...values) : 1;
     const range = Math.max(1, max - min);
 
-    ctx.strokeStyle = "rgba(255,255,255,0.04)";
-    ctx.lineWidth = 1;
-    for (let i = 0; i <= 4; i++) {
-      const y = padding.top + (chartH / 4) * i;
-      ctx.beginPath();
-      ctx.moveTo(padding.left, y);
-      ctx.lineTo(padding.left + chartW, y);
-      ctx.stroke();
-    }
+    if (hasValidValues) {
+      ctx.strokeStyle = "rgba(255,255,255,0.04)";
+      ctx.lineWidth = 1;
+      for (let i = 0; i <= 4; i++) {
+        const y = padding.top + (chartH / 4) * i;
+        ctx.beginPath();
+        ctx.moveTo(padding.left, y);
+        ctx.lineTo(padding.left + chartW, y);
+        ctx.stroke();
+      }
 
-    ctx.fillStyle = "rgba(255,255,255,0.18)";
-    ctx.font = "10px monospace";
-    ctx.textAlign = "right";
-    for (let i = 0; i <= 4; i++) {
-      const value = Math.round(max - (range / 4) * i);
-      ctx.fillText(`${value}ms`, padding.left - 8, padding.top + (chartH / 4) * i + 3);
+      ctx.fillStyle = "rgba(255,255,255,0.18)";
+      ctx.font = "10px monospace";
+      ctx.textAlign = "right";
+      for (let i = 0; i <= 4; i++) {
+        const value = Math.round(max - (range / 4) * i);
+        ctx.fillText(`${value}ms`, padding.left - 8, padding.top + (chartH / 4) * i + 3);
+      }
+    } else {
+      ctx.fillStyle = "rgba(255,255,255,0.18)";
+      ctx.font = "10px monospace";
     }
 
     ctx.textAlign = "center";
