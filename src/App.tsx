@@ -599,7 +599,7 @@ export default function VPSMonitorPage() {
               }}
             />
           </div>
-          <div className="max-h-[58vh] overflow-auto rounded-b-2xl">
+          <div className="hidden sm:block max-h-[58vh] overflow-auto rounded-b-2xl">
             <table className="w-full min-w-[720px] table-fixed">
               <thead>
                 <tr className="text-left text-[10px] text-white/30 uppercase tracking-wider">
@@ -681,6 +681,55 @@ export default function VPSMonitorPage() {
               </tbody>
             </table>
           </div>
+          <ul className="sm:hidden divide-y divide-white/[0.04]">
+            {filteredNodes.map((node) => {
+              const status = statusConfig[node.status];
+              const StatusIcon = status.icon;
+              const subscription = subscriptionById.get(node.subscription_id);
+              return (
+                <li
+                  key={node.id}
+                  onClick={() => setDetailNode(node)}
+                  className="px-4 py-3.5 flex items-center gap-3 cursor-pointer active:bg-white/[0.04] transition-colors"
+                >
+                  <div className={`w-10 h-10 rounded-lg ${status.bg} flex items-center justify-center border ${status.border} flex-shrink-0`}>
+                    <StatusIcon className={`w-4 h-4 ${status.color}`} />
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2">
+                      <div className="text-white/90 font-medium text-sm truncate flex-1 min-w-0">{node.name}</div>
+                      <LatencyBadge latency={node.latency_ms} />
+                    </div>
+                    <div className="mt-1.5 flex items-center gap-2 text-[11px] text-white/40 overflow-hidden">
+                      <span className={`inline-flex items-center gap-1 ${status.color} flex-shrink-0`}>
+                        <span className={`w-1.5 h-1.5 rounded-full ${status.dot}`} />
+                        {status.label}
+                      </span>
+                      <span className="text-white/15">·</span>
+                      <span className="font-mono uppercase tracking-wider truncate">{node.protocol || "--"}</span>
+                      <span className="text-white/15">·</span>
+                      <span className="truncate">{formatTime(node.last_checked)}</span>
+                    </div>
+                    <div className="mt-1 text-[10px] text-white/30 truncate">
+                      {subscription?.name ?? `订阅 #${node.subscription_id}`}
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      handleTestNode(node.id);
+                    }}
+                    disabled={testingAll || testingNodeId === node.id}
+                    className="flex items-center justify-center w-11 h-11 rounded-lg text-white/40 hover:text-white/80 active:bg-white/5 disabled:opacity-20 flex-shrink-0"
+                    aria-label="测速"
+                  >
+                    <RefreshCw className={`w-4 h-4 ${testingNodeId === node.id ? "animate-spin-silk" : ""}`} />
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
           {filteredNodes.length === 0 && (
             <div className="text-center py-16">
               <Server className="w-10 h-10 text-white/10 mx-auto mb-3" />
