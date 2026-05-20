@@ -1115,18 +1115,18 @@ function NodeDetailModal({
         </div>
 
         <div className="p-5 sm:p-6 space-y-6">
-          <div className="grid grid-cols-3 gap-3 sm:gap-4">
-            <div className="liquid-glass rounded-xl p-4 text-center">
+          <div className="grid grid-cols-3 gap-2 sm:gap-4">
+            <div className="liquid-glass rounded-xl p-3 sm:p-4 text-center min-w-0">
               <div className="text-[10px] text-white/30 tracking-wider uppercase mb-1">状态</div>
-              <div className={`text-lg font-medium ${status.color}`}>{status.label}</div>
+              <div className={`text-base sm:text-lg font-medium truncate ${status.color}`}>{status.label}</div>
             </div>
-            <div className="liquid-glass rounded-xl p-4 text-center">
+            <div className="liquid-glass rounded-xl p-3 sm:p-4 text-center min-w-0">
               <div className="text-[10px] text-white/30 tracking-wider uppercase mb-1">延迟</div>
               <LatencyBadge latency={node.latency_ms} size="lg" />
             </div>
-            <div className="liquid-glass rounded-xl p-4 text-center">
+            <div className="liquid-glass rounded-xl p-3 sm:p-4 text-center min-w-0">
               <div className="text-[10px] text-white/30 tracking-wider uppercase mb-1">协议</div>
-              <div className="text-lg font-mono text-sky-400">{node.protocol || "--"}</div>
+              <div className="text-sm sm:text-lg font-mono text-sky-400 truncate">{node.protocol || "--"}</div>
             </div>
           </div>
 
