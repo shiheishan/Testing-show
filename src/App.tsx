@@ -420,7 +420,7 @@ export default function VPSMonitorPage() {
   const [loading, setLoading] = useState(true);
   const [statusMessage, setStatusMessage] = useState("正在同步状态板...");
   const [testingAll, setTestingAll] = useState(false);
-  const [testingNodeId, setTestingNodeId] = useState<number | null>(null);
+  const [testingNodeIds, setTestingNodeIds] = useState<ReadonlySet<number>>(() => new Set());
   const [detailNodeId, setDetailNodeId] = useState<number | null>(null);
   const [sortBy, setSortBy] = useState<"default" | "latency" | "name">("default");
   const [filterStatus, setFilterStatus] = useState<"all" | NodeStatus>("all");
@@ -532,7 +532,12 @@ export default function VPSMonitorPage() {
   }, [loadData, selectedSubscriptionId]);
 
   const handleTestNode = useCallback(async (id: number) => {
-    setTestingNodeId(id);
+    setTestingNodeIds((previous) => {
+      if (previous.has(id)) return previous;
+      const next = new Set(previous);
+      next.add(id);
+      return next;
+    });
     try {
       const payload = await apiRequest<CheckResponse>(`/api/nodes/${id}/check`, { method: "POST" });
       setStatusMessage(checkMessage(payload.status, payload.total_nodes));
@@ -541,7 +546,12 @@ export default function VPSMonitorPage() {
     } catch (error) {
       setStatusMessage(error instanceof Error ? error.message : "测速失败");
     } finally {
-      setTestingNodeId(null);
+      setTestingNodeIds((previous) => {
+        if (!previous.has(id)) return previous;
+        const next = new Set(previous);
+        next.delete(id);
+        return next;
+      });
     }
   }, [loadData]);
 
@@ -677,10 +687,10 @@ export default function VPSMonitorPage() {
                               event.stopPropagation();
                               handleTestNode(node.id);
                             }}
-                            disabled={testingAll || testingNodeId === node.id}
+                            disabled={testingAll || testingNodeIds.has(node.id)}
                             className="text-[10px] tracking-wider text-white/30 hover:text-white/70 transition-colors flex items-center gap-1 disabled:opacity-20 py-1 px-2 rounded hover:bg-white/5"
                           >
-                            <RefreshCw className={`w-3 h-3 ${testingNodeId === node.id ? "animate-spin-silk" : ""}`} />
+                            <RefreshCw className={`w-3 h-3 ${testingNodeIds.has(node.id) ? "animate-spin-silk" : ""}`} />
                             测速
                           </button>
                           <button
@@ -740,11 +750,11 @@ export default function VPSMonitorPage() {
                       event.stopPropagation();
                       handleTestNode(node.id);
                     }}
-                    disabled={testingAll || testingNodeId === node.id}
+                    disabled={testingAll || testingNodeIds.has(node.id)}
                     className="flex items-center justify-center w-11 h-11 rounded-lg text-white/40 hover:text-white/80 active:bg-white/5 disabled:opacity-20 flex-shrink-0"
                     aria-label="测速"
                   >
-                    <RefreshCw className={`w-4 h-4 ${testingNodeId === node.id ? "animate-spin-silk" : ""}`} />
+                    <RefreshCw className={`w-4 h-4 ${testingNodeIds.has(node.id) ? "animate-spin-silk" : ""}`} />
                   </button>
                 </li>
               );
@@ -766,7 +776,7 @@ export default function VPSMonitorPage() {
           node={detailNode}
           onClose={() => setDetailNodeId(null)}
           onTest={handleTestNode}
-          testing={testingNodeId === detailNode.id}
+          testing={testingNodeIds.has(detailNode.id)}
         />
       )}
     </div>
