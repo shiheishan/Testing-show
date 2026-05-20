@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, memo } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, memo } from "react";
 import { createPortal } from "react-dom";
 import {
   Activity,
@@ -142,11 +142,42 @@ async function apiRequest<T>(path: string, options: RequestInit = {}): Promise<T
     headers: { "Content-Type": "application/json" },
     ...options,
   });
-  const payload = await response.json();
+  const body = await response.text();
+  let payload: unknown = undefined;
+  if (body.length > 0) {
+    try {
+      payload = JSON.parse(body);
+    } catch {
+      if (!response.ok) {
+        throw new Error(`请求失败 (HTTP ${response.status})`);
+      }
+      throw new Error(`响应解析失败 (HTTP ${response.status})`);
+    }
+  }
   if (!response.ok) {
-    throw new Error(payload.message || "请求失败");
+    const message =
+      payload && typeof payload === "object" && "message" in payload && typeof (payload as { message: unknown }).message === "string"
+        ? (payload as { message: string }).message
+        : `请求失败 (HTTP ${response.status})`;
+    throw new Error(message);
   }
   return payload as T;
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof DOMException && error.name === "AbortError";
+}
+
+function useMediaQuery(query: string): boolean {
+  return useSyncExternalStore(
+    (callback) => {
+      const mql = window.matchMedia(query);
+      mql.addEventListener("change", callback);
+      return () => mql.removeEventListener("change", callback);
+    },
+    () => window.matchMedia(query).matches,
+    () => false,
+  );
 }
 
 function normalizeNodeStatus(value: string | null | undefined): NodeStatus {
@@ -210,7 +241,7 @@ function checkMessage(status: CheckResponse["status"], total: number): string {
 
 function LatencyBadge({ latency, size = "sm" }: { latency: number | null; size?: "sm" | "lg" }) {
   if (latency === null) {
-    return <span className={`${size === "lg" ? "text-base" : "text-xs"} text-white/20 font-mono`}>--</span>;
+    return <span className={`${size === "lg" ? "text-base" : "text-xs"} text-white/35 font-mono`}>--</span>;
   }
   const color =
     latency < 50 ? "text-emerald-400"
@@ -405,8 +436,8 @@ export default function VPSMonitorPage() {
   const [loading, setLoading] = useState(true);
   const [statusMessage, setStatusMessage] = useState("正在同步状态板...");
   const [testingAll, setTestingAll] = useState(false);
-  const [testingNodeId, setTestingNodeId] = useState<number | null>(null);
-  const [detailNode, setDetailNode] = useState<NodeRecord | null>(null);
+  const [testingNodeIds, setTestingNodeIds] = useState<ReadonlySet<number>>(() => new Set());
+  const [detailNodeId, setDetailNodeId] = useState<number | null>(null);
   const [sortBy, setSortBy] = useState<"default" | "latency" | "name">("default");
   const [filterStatus, setFilterStatus] = useState<"all" | NodeStatus>("all");
   const [searchQuery, setSearchQuery] = useState("");
@@ -417,7 +448,14 @@ export default function VPSMonitorPage() {
     return new Map(subscriptions.map((item) => [item.id, item]));
   }, [subscriptions]);
 
+  const loadAbortRef = useRef<AbortController | null>(null);
+  const isDesktop = useMediaQuery("(min-width: 640px)");
+
   const loadData = useCallback(async (silent = false) => {
+    loadAbortRef.current?.abort();
+    const controller = new AbortController();
+    loadAbortRef.current = controller;
+    const { signal } = controller;
     if (!silent) setLoading(true);
     try {
       const params = new URLSearchParams();
@@ -426,10 +464,11 @@ export default function VPSMonitorPage() {
       }
       const query = params.toString() ? `?${params.toString()}` : "";
       const [subscriptionPayload, nodePayload, statsPayload] = await Promise.all([
-        apiRequest<{ subscriptions: Subscription[] }>("/api/subscriptions"),
-        apiRequest<{ nodes: NodeRecord[] }>(`/api/nodes${query}`),
-        apiRequest<Stats>(`/api/nodes/stats${query}`),
+        apiRequest<{ subscriptions: Subscription[] }>("/api/subscriptions", { signal }),
+        apiRequest<{ nodes: NodeRecord[] }>(`/api/nodes${query}`, { signal }),
+        apiRequest<Stats>(`/api/nodes/stats${query}`, { signal }),
       ]);
+      if (signal.aborted) return;
       setSubscriptions(subscriptionPayload.subscriptions);
       if (
         selectedSubscriptionId != null &&
@@ -441,9 +480,13 @@ export default function VPSMonitorPage() {
       setStats(statsPayload);
       setStatusMessage(subscriptionPayload.subscriptions.length ? "状态板已同步" : "暂无配置订阅");
     } catch (error) {
+      if (isAbortError(error) || signal.aborted) return;
       setStatusMessage(error instanceof Error ? error.message : "同步失败");
     } finally {
-      if (!silent) setLoading(false);
+      if (loadAbortRef.current === controller) {
+        loadAbortRef.current = null;
+      }
+      if (!silent && !signal.aborted) setLoading(false);
     }
   }, [selectedSubscriptionId]);
 
@@ -455,8 +498,15 @@ export default function VPSMonitorPage() {
     return () => {
       window.clearTimeout(initialLoad);
       window.clearInterval(id);
+      loadAbortRef.current?.abort();
+      loadAbortRef.current = null;
     };
   }, [loadData]);
+
+  const detailNode = useMemo(
+    () => (detailNodeId == null ? null : nodes.find((node) => node.id === detailNodeId) ?? null),
+    [nodes, detailNodeId],
+  );
 
   const filteredNodes = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
@@ -512,7 +562,12 @@ export default function VPSMonitorPage() {
   }, [loadData, selectedSubscriptionId]);
 
   const handleTestNode = useCallback(async (id: number) => {
-    setTestingNodeId(id);
+    setTestingNodeIds((previous) => {
+      if (previous.has(id)) return previous;
+      const next = new Set(previous);
+      next.add(id);
+      return next;
+    });
     try {
       const payload = await apiRequest<CheckResponse>(`/api/nodes/${id}/check`, { method: "POST" });
       setStatusMessage(checkMessage(payload.status, payload.total_nodes));
@@ -521,7 +576,12 @@ export default function VPSMonitorPage() {
     } catch (error) {
       setStatusMessage(error instanceof Error ? error.message : "测速失败");
     } finally {
-      setTestingNodeId(null);
+      setTestingNodeIds((previous) => {
+        if (!previous.has(id)) return previous;
+        const next = new Set(previous);
+        next.delete(id);
+        return next;
+      });
     }
   }, [loadData]);
 
@@ -534,7 +594,7 @@ export default function VPSMonitorPage() {
             <span className="text-sm font-medium tracking-wider text-white/90">VPS 节点监控</span>
           </div>
           <div className="flex items-center gap-4">
-            <span className="text-[10px] text-white/30 flex items-center gap-1.5">
+            <span className="text-[11px] text-white/55 flex items-center gap-1.5">
               <span className={`w-1.5 h-1.5 rounded-full ${failedSubscriptions ? "bg-amber-400" : "bg-emerald-400 animate-pulse"}`} />
               {statusMessage}
             </span>
@@ -583,9 +643,9 @@ export default function VPSMonitorPage() {
         </div>
 
         <div className="liquid-glass rounded-2xl">
-          <div className="flex items-center justify-between px-5 py-3 border-b border-white/5">
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between sm:gap-3 px-5 py-3 border-b border-white/5">
             <span className="text-sm text-white/60">
-              节点列表{filteredNodes.length > 0 && <span className="text-white/30 ml-1">（{filteredNodes.length}）</span>}
+              节点列表{filteredNodes.length > 0 && <span className="text-white/40 ml-1">（{filteredNodes.length}）</span>}
             </span>
             <SubscriptionSelector
               subscriptions={subscriptions}
@@ -599,92 +659,53 @@ export default function VPSMonitorPage() {
               }}
             />
           </div>
-          <div className="max-h-[58vh] overflow-auto rounded-b-2xl">
-            <table className="w-full min-w-[720px] table-fixed">
-              <thead>
-                <tr className="text-left text-[10px] text-white/30 uppercase tracking-wider">
-                  <th className="sticky top-0 z-10 py-3 px-5 border-y border-l border-white/10 rounded-tl-xl font-medium w-[28%] bg-[#181818]/95 backdrop-blur-md">名称</th>
-                  <th className="sticky top-0 z-10 py-3 px-4 border-y border-white/10 font-medium w-[90px] bg-[#181818]/95 backdrop-blur-md">协议</th>
-                  <th className="sticky top-0 z-10 py-3 px-4 border-y border-white/10 font-medium w-[100px] bg-[#181818]/95 backdrop-blur-md">状态</th>
-                  <th className="sticky top-0 z-10 py-3 px-4 border-y border-white/10 font-medium w-[80px] bg-[#181818]/95 backdrop-blur-md">延迟</th>
-                  <th className="sticky top-0 z-10 py-3 px-4 border-y border-white/10 font-medium w-[120px] bg-[#181818]/95 backdrop-blur-md">最后检测</th>
-                  <th className="sticky top-0 z-10 py-3 px-5 border-y border-r border-white/10 rounded-tr-xl font-medium text-right w-[120px] bg-[#181818]/95 backdrop-blur-md">操作</th>
-                </tr>
-              </thead>
-              <tbody>
-                {filteredNodes.map((node) => {
-                  const status = statusConfig[node.status];
-                  const StatusIcon = status.icon;
-                  const subscription = subscriptionById.get(node.subscription_id);
-                  return (
-                    <tr
+          {isDesktop ? (
+            <div className="max-h-[58vh] overflow-auto rounded-b-2xl">
+              <table className="w-full min-w-[720px] table-fixed">
+                <thead>
+                  <tr className="text-left text-[10px] text-white/30 uppercase tracking-wider">
+                    <th className="sticky top-0 z-10 py-3 px-5 border-y border-l border-white/10 rounded-tl-xl font-medium w-[28%] bg-[#181818]/95 backdrop-blur-md">名称</th>
+                    <th className="sticky top-0 z-10 py-3 px-4 border-y border-white/10 font-medium w-[90px] bg-[#181818]/95 backdrop-blur-md">协议</th>
+                    <th className="sticky top-0 z-10 py-3 px-4 border-y border-white/10 font-medium w-[100px] bg-[#181818]/95 backdrop-blur-md">状态</th>
+                    <th className="sticky top-0 z-10 py-3 px-4 border-y border-white/10 font-medium w-[80px] bg-[#181818]/95 backdrop-blur-md">延迟</th>
+                    <th className="sticky top-0 z-10 py-3 px-4 border-y border-white/10 font-medium w-[120px] bg-[#181818]/95 backdrop-blur-md">最后检测</th>
+                    <th className="sticky top-0 z-10 py-3 px-5 border-y border-r border-white/10 rounded-tr-xl font-medium text-right w-[120px] bg-[#181818]/95 backdrop-blur-md">操作</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filteredNodes.map((node) => (
+                    <NodeTableRow
                       key={node.id}
-                      className="text-sm border-b border-white/[0.03] hover:bg-white/[0.03] transition-colors cursor-pointer"
-                      onClick={() => setDetailNode(node)}
-                    >
-                      <td className="py-3.5 px-5">
-                        <div className="flex items-center gap-3">
-                          <div className={`w-8 h-8 rounded-lg ${status.bg} flex items-center justify-center border ${status.border} flex-shrink-0`}>
-                            <StatusIcon className={`w-4 h-4 ${status.color}`} />
-                          </div>
-                          <div className="min-w-0 overflow-hidden">
-                            <div className="text-white/90 font-medium text-sm truncate">{node.name}</div>
-                            <div className="text-[10px] text-white/30 truncate">{subscription?.name ?? `订阅 #${node.subscription_id}`}</div>
-                          </div>
-                        </div>
-                      </td>
-                      <td className="py-3.5 px-4">
-                        <span className="inline-flex items-center px-2.5 py-1 rounded-full text-[10px] tracking-wider text-sky-300 bg-sky-400/10 border border-sky-400/15">
-                          {node.protocol || "--"}
-                        </span>
-                      </td>
-                      <td className="py-3.5 px-4">
-                        <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] tracking-wider ${status.bg} ${status.color} border ${status.border}`}>
-                          <span className={`w-1.5 h-1.5 rounded-full ${status.dot}`} />
-                          {status.label}
-                        </span>
-                      </td>
-                      <td className="py-3.5 px-4">
-                        <LatencyBadge latency={node.latency_ms} />
-                      </td>
-                      <td className="py-3.5 px-4 text-white/30 text-xs">
-                        {formatTime(node.last_checked)}
-                      </td>
-                      <td className="py-3.5 px-5 text-right">
-                        <div className="flex items-center justify-end gap-1">
-                          <button
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              handleTestNode(node.id);
-                            }}
-                            disabled={testingAll || testingNodeId === node.id}
-                            className="text-[10px] tracking-wider text-white/30 hover:text-white/70 transition-colors flex items-center gap-1 disabled:opacity-20 py-1 px-2 rounded hover:bg-white/5"
-                          >
-                            <RefreshCw className={`w-3 h-3 ${testingNodeId === node.id ? "animate-spin-silk" : ""}`} />
-                            测速
-                          </button>
-                          <button
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              setDetailNode(node);
-                            }}
-                            className="text-[10px] tracking-wider text-white/30 hover:text-white/70 transition-colors flex items-center gap-1 py-1 px-2 rounded hover:bg-white/5"
-                          >
-                            详情
-                            <ChevronRight className="w-3 h-3" />
-                          </button>
-                        </div>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
+                      node={node}
+                      subscription={subscriptionById.get(node.subscription_id)}
+                      isTesting={testingNodeIds.has(node.id)}
+                      testingAll={testingAll}
+                      onOpenDetail={setDetailNodeId}
+                      onTest={handleTestNode}
+                    />
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <ul className="divide-y divide-white/[0.04]">
+              {filteredNodes.map((node) => (
+                <NodeMobileCard
+                  key={node.id}
+                  node={node}
+                  subscription={subscriptionById.get(node.subscription_id)}
+                  isTesting={testingNodeIds.has(node.id)}
+                  testingAll={testingAll}
+                  onOpenDetail={setDetailNodeId}
+                  onTest={handleTestNode}
+                />
+              ))}
+            </ul>
+          )}
           {filteredNodes.length === 0 && (
             <div className="text-center py-16">
               <Server className="w-10 h-10 text-white/10 mx-auto mb-3" />
-              <p className="text-sm text-white/20">
+              <p className="text-sm text-white/45">
                 {loading ? "正在加载节点..." : searchQuery ? "未找到匹配的节点" : "暂无符合条件的节点"}
               </p>
             </div>
@@ -695,14 +716,177 @@ export default function VPSMonitorPage() {
       {detailNode && (
         <NodeDetailModal
           node={detailNode}
-          onClose={() => setDetailNode(null)}
+          onClose={() => setDetailNodeId(null)}
           onTest={handleTestNode}
-          testing={testingNodeId === detailNode.id}
+          testing={testingNodeIds.has(detailNode.id)}
         />
       )}
     </div>
   );
 }
+
+interface NodeRowProps {
+  node: NodeRecord;
+  subscription: Subscription | undefined;
+  isTesting: boolean;
+  testingAll: boolean;
+  onOpenDetail: (id: number) => void;
+  onTest: (id: number) => void;
+}
+
+const NodeTableRow = memo(function NodeTableRow({
+  node,
+  subscription,
+  isTesting,
+  testingAll,
+  onOpenDetail,
+  onTest,
+}: NodeRowProps) {
+  const status = statusConfig[node.status];
+  const StatusIcon = status.icon;
+  return (
+    <tr
+      className="text-sm border-b border-white/[0.03] hover:bg-white/[0.03] transition-colors cursor-pointer"
+      onClick={() => onOpenDetail(node.id)}
+    >
+      <td className="py-3.5 px-5">
+        <div className="flex items-center gap-3">
+          <div className={`w-8 h-8 rounded-lg ${status.bg} flex items-center justify-center border ${status.border} flex-shrink-0`}>
+            <StatusIcon className={`w-4 h-4 ${status.color}`} />
+          </div>
+          <div className="min-w-0 overflow-hidden">
+            <div className="text-white/90 font-medium text-sm truncate">{node.name}</div>
+            <div className="text-[10px] text-white/30 truncate">{subscription?.name ?? `订阅 #${node.subscription_id}`}</div>
+          </div>
+        </div>
+      </td>
+      <td className="py-3.5 px-4">
+        <span className="inline-flex items-center px-2.5 py-1 rounded-full text-[10px] tracking-wider text-sky-300 bg-sky-400/10 border border-sky-400/15">
+          {node.protocol || "--"}
+        </span>
+      </td>
+      <td className="py-3.5 px-4">
+        <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] tracking-wider ${status.bg} ${status.color} border ${status.border}`}>
+          <span className={`w-1.5 h-1.5 rounded-full ${status.dot}`} />
+          {status.label}
+        </span>
+      </td>
+      <td className="py-3.5 px-4">
+        <LatencyBadge latency={node.latency_ms} />
+      </td>
+      <td className="py-3.5 px-4 text-white/30 text-xs">
+        {formatTime(node.last_checked)}
+      </td>
+      <td className="py-3.5 px-5 text-right">
+        <div className="flex items-center justify-end gap-1">
+          <button
+            onClick={(event) => {
+              event.stopPropagation();
+              onTest(node.id);
+            }}
+            disabled={testingAll || isTesting}
+            className="text-[10px] tracking-wider text-white/30 hover:text-white/70 transition-colors flex items-center gap-1 disabled:opacity-20 py-1 px-2 rounded hover:bg-white/5"
+          >
+            <RefreshCw className={`w-3 h-3 ${isTesting ? "animate-spin-silk" : ""}`} />
+            测速
+          </button>
+          <button
+            onClick={(event) => {
+              event.stopPropagation();
+              onOpenDetail(node.id);
+            }}
+            className="text-[10px] tracking-wider text-white/30 hover:text-white/70 transition-colors flex items-center gap-1 py-1 px-2 rounded hover:bg-white/5"
+          >
+            详情
+            <ChevronRight className="w-3 h-3" />
+          </button>
+        </div>
+      </td>
+    </tr>
+  );
+});
+
+const NodeMobileCard = memo(function NodeMobileCard({
+  node,
+  subscription,
+  isTesting,
+  testingAll,
+  onOpenDetail,
+  onTest,
+}: NodeRowProps) {
+  const status = statusConfig[node.status];
+  const StatusIcon = status.icon;
+  const touchRef = useRef<{ x: number; y: number; moved: boolean } | null>(null);
+  return (
+    <li
+      role="button"
+      tabIndex={0}
+      aria-label={`查看 ${node.name} 详情`}
+      onTouchStart={(event) => {
+        const touch = event.touches[0];
+        touchRef.current = { x: touch.clientX, y: touch.clientY, moved: false };
+      }}
+      onTouchMove={(event) => {
+        const start = touchRef.current;
+        if (!start) return;
+        const touch = event.touches[0];
+        if (Math.abs(touch.clientX - start.x) > 10 || Math.abs(touch.clientY - start.y) > 10) {
+          start.moved = true;
+        }
+      }}
+      onClick={() => {
+        if (touchRef.current?.moved) {
+          touchRef.current = null;
+          return;
+        }
+        touchRef.current = null;
+        onOpenDetail(node.id);
+      }}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          onOpenDetail(node.id);
+        }
+      }}
+      className="px-4 py-3.5 flex items-center gap-3 cursor-pointer active:bg-white/[0.04] transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400/40 focus-visible:ring-inset"
+    >
+      <div className={`w-10 h-10 rounded-lg ${status.bg} flex items-center justify-center border ${status.border} flex-shrink-0`}>
+        <StatusIcon className={`w-4 h-4 ${status.color}`} />
+      </div>
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-2">
+          <div className="text-white/90 font-medium text-sm truncate flex-1 min-w-0">{node.name}</div>
+          <LatencyBadge latency={node.latency_ms} />
+        </div>
+        <div className="mt-1.5 flex items-center gap-2 text-[11px] text-white/40 overflow-hidden">
+          <span className={`inline-flex items-center gap-1 ${status.color} flex-shrink-0`}>
+            <span className={`w-1.5 h-1.5 rounded-full ${status.dot}`} />
+            {status.label}
+          </span>
+          <span className="text-white/15">·</span>
+          <span className="font-mono uppercase tracking-wider truncate">{node.protocol || "--"}</span>
+          <span className="text-white/15">·</span>
+          <span className="truncate">{formatTime(node.last_checked)}</span>
+        </div>
+        <div className="mt-1 text-[11px] text-white/50 truncate">
+          {subscription?.name ?? `订阅 #${node.subscription_id}`}
+        </div>
+      </div>
+      <button
+        type="button"
+        onClick={(event) => {
+          event.stopPropagation();
+          onTest(node.id);
+        }}
+        disabled={testingAll || isTesting}
+        className="flex items-center justify-center w-11 h-11 rounded-lg text-white/40 hover:text-white/80 active:bg-white/5 disabled:opacity-20 flex-shrink-0"
+        aria-label="测速"
+      >
+        <RefreshCw className={`w-4 h-4 ${isTesting ? "animate-spin-silk" : ""}`} />
+      </button>
+    </li>
+  );
+});
 
 function StatCard({ icon: Icon, label, value, color, trend, suffix }: {
   icon: React.ElementType;
@@ -722,7 +906,7 @@ function StatCard({ icon: Icon, label, value, color, trend, suffix }: {
       <div className={`text-2xl font-mono font-medium ${color}`}>
         {isNumeric ? <AnimatedNumber value={value} suffix={suffix ?? ""} /> : value}
       </div>
-      {trend && <div className="text-[10px] text-white/20 mt-1">{trend}</div>}
+      {trend && <div className="text-[11px] text-white/45 mt-1">{trend}</div>}
     </div>
   );
 }
@@ -837,19 +1021,19 @@ function SubscriptionSelector({
   const statusFailed = selected ? selected.status === "failed" : failedCount > 0;
 
   return (
-    <div ref={triggerRef} className="flex items-center gap-2 text-xs text-white/40">
-      <span className={`w-1.5 h-1.5 rounded-full ${statusFailed ? "bg-amber-400" : "bg-emerald-400"}`} />
-      <span className="truncate max-w-[90px]">{selected?.name ?? summary.name}</span>
-      <span className="text-white/20">·</span>
-      <span className={statusFailed ? "text-amber-300" : "text-emerald-300"}>
+    <div ref={triggerRef} className="flex items-center gap-2 text-xs text-white/55 min-w-0">
+      <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${statusFailed ? "bg-amber-400" : "bg-emerald-400"}`} />
+      <span className="truncate min-w-0 flex-1 sm:flex-none sm:max-w-[140px]">{selected?.name ?? summary.name}</span>
+      <span className="text-white/25 flex-shrink-0">·</span>
+      <span className={`flex-shrink-0 ${statusFailed ? "text-amber-300" : "text-emerald-300"}`}>
         {selected ? (selected.status === "failed" ? "失败" : "正常") : failedCount ? `${failedCount} 个异常` : "正常"}
       </span>
       <button
         onClick={handleToggle}
-        className="p-1 -mr-1 text-white/25 hover:text-white/60 transition-colors"
+        className="flex items-center justify-center w-8 h-8 -mr-2 sm:w-auto sm:h-auto sm:p-1 text-white/40 hover:text-white/70 transition-colors flex-shrink-0"
         aria-label={open ? "收起订阅栏" : "展开订阅栏"}
       >
-        <ChevronDown className={`w-3 h-3 transition-transform ${open ? "rotate-180" : ""}`} />
+        <ChevronDown className={`w-3.5 h-3.5 sm:w-3 sm:h-3 transition-transform ${open ? "rotate-180" : ""}`} />
       </button>
       {panelMounted && panelPosition && createPortal(
         <SubscriptionPanel
@@ -949,8 +1133,8 @@ function SubscriptionPanelItem({
           {failed ? "异常" : "正常"}
         </span>
       </div>
-      <p className="text-[10px] text-white/25 mt-1 truncate font-mono">{subtitle}</p>
-      <p className="text-[10px] text-white/25 mt-0.5">{meta}</p>
+      <p className="text-[10px] text-white/45 mt-1 truncate font-mono">{subtitle}</p>
+      <p className="text-[10px] text-white/40 mt-0.5">{meta}</p>
     </button>
   );
 }
@@ -1037,8 +1221,31 @@ function NodeDetailModal({
     };
   }, [node.id]);
 
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    document.addEventListener("keydown", handleKeyDown);
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.removeEventListener("keydown", handleKeyDown);
+      document.body.style.overflow = previousOverflow;
+    };
+  }, [onClose]);
+
+  const handleBackdropClick = (event: React.MouseEvent<HTMLDivElement>) => {
+    if (event.target === event.currentTarget) onClose();
+  };
+
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-label={node.name}
+      onClick={handleBackdropClick}
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4"
+    >
       <div className="liquid-glass rounded-3xl w-full max-w-2xl max-h-[85vh] overflow-y-auto">
         <div className="p-5 sm:p-6 border-b border-white/5 flex items-start justify-between gap-3">
           <div className="flex items-start gap-3 sm:gap-4 min-w-0">
@@ -1047,37 +1254,42 @@ function NodeDetailModal({
             </div>
             <div className="min-w-0">
               <h2 className="text-lg sm:text-xl font-medium text-white/90 leading-snug break-words line-clamp-2">{node.name}</h2>
-              <p className="text-xs text-white/30 font-mono mt-1 break-all">{node.server}:{node.port}</p>
+              <p className="text-xs text-white/55 font-mono mt-1 break-all">{node.server}:{node.port}</p>
             </div>
           </div>
-          <div className="flex items-center gap-2 flex-shrink-0">
+          <div className="flex items-center gap-1 sm:gap-2 flex-shrink-0">
             <button
               onClick={() => onTest(node.id)}
               disabled={testing}
-              className="text-xs tracking-wider text-white/40 hover:text-white/70 transition-colors flex items-center gap-1.5 px-2 sm:px-3 py-1.5 rounded-lg hover:bg-white/5 disabled:opacity-20"
+              aria-label="测速"
+              className="text-xs tracking-wider text-white/40 hover:text-white/70 transition-colors flex items-center justify-center gap-1.5 w-11 h-11 sm:w-auto sm:h-auto sm:px-3 sm:py-1.5 rounded-lg hover:bg-white/5 disabled:opacity-20"
             >
-              <RefreshCw className={`w-3.5 h-3.5 ${testing ? "animate-spin-silk" : ""}`} />
+              <RefreshCw className={`w-4 h-4 sm:w-3.5 sm:h-3.5 ${testing ? "animate-spin-silk" : ""}`} />
               <span className="hidden sm:inline">测速</span>
             </button>
-            <button onClick={onClose} className="text-white/30 hover:text-white/60 p-1">
+            <button
+              onClick={onClose}
+              aria-label="关闭"
+              className="text-white/30 hover:text-white/60 flex items-center justify-center w-11 h-11 sm:w-auto sm:h-auto sm:p-1 rounded-lg hover:bg-white/5"
+            >
               <X className="w-5 h-5" />
             </button>
           </div>
         </div>
 
         <div className="p-5 sm:p-6 space-y-6">
-          <div className="grid grid-cols-3 gap-3 sm:gap-4">
-            <div className="liquid-glass rounded-xl p-4 text-center">
+          <div className="grid grid-cols-3 gap-2 sm:gap-4">
+            <div className="liquid-glass rounded-xl p-3 sm:p-4 text-center min-w-0">
               <div className="text-[10px] text-white/30 tracking-wider uppercase mb-1">状态</div>
-              <div className={`text-lg font-medium ${status.color}`}>{status.label}</div>
+              <div className={`text-base sm:text-lg font-medium truncate ${status.color}`}>{status.label}</div>
             </div>
-            <div className="liquid-glass rounded-xl p-4 text-center">
+            <div className="liquid-glass rounded-xl p-3 sm:p-4 text-center min-w-0">
               <div className="text-[10px] text-white/30 tracking-wider uppercase mb-1">延迟</div>
               <LatencyBadge latency={node.latency_ms} size="lg" />
             </div>
-            <div className="liquid-glass rounded-xl p-4 text-center">
+            <div className="liquid-glass rounded-xl p-3 sm:p-4 text-center min-w-0">
               <div className="text-[10px] text-white/30 tracking-wider uppercase mb-1">协议</div>
-              <div className="text-lg font-mono text-sky-400">{node.protocol || "--"}</div>
+              <div className="text-sm sm:text-lg font-mono text-sky-400 truncate">{node.protocol || "--"}</div>
             </div>
           </div>
 
@@ -1103,15 +1315,15 @@ function NodeDetailModal({
 
           <div className="liquid-glass rounded-xl p-4">
             <div className="flex items-center justify-between mb-3">
-              <span className="text-[10px] text-white/30 tracking-wider uppercase">近 1 小时延迟波形</span>
-              <span className="text-[10px] text-white/20">{history.length} 点</span>
+              <span className="text-[10px] text-white/40 tracking-wider uppercase">近 1 小时延迟波形</span>
+              <span className="text-[10px] text-white/45 tabular-nums">{history.length} 点</span>
             </div>
             {historyLoading ? (
-              <div className="h-[180px] flex items-center justify-center text-xs text-white/25">正在加载波形...</div>
+              <div className="h-[180px] flex items-center justify-center text-xs text-white/45">正在加载波形...</div>
             ) : history.length > 0 ? (
               <LatencyHistoryChart points={history} />
             ) : (
-              <div className="h-[180px] flex items-center justify-center text-xs text-white/25">暂无近 1 小时检测记录</div>
+              <div className="h-[180px] flex items-center justify-center text-xs text-white/45">暂无近 1 小时检测记录</div>
             )}
           </div>
         </div>
@@ -1137,7 +1349,8 @@ function LatencyHistoryChart({ points }: { points: CheckHistoryPoint[] }) {
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, width, height);
 
-    const padding = { top: 14, right: 16, bottom: 24, left: 42 };
+    const hasValidValues = points.some((point) => point.latency_ms != null);
+    const padding = { top: 14, right: 16, bottom: 24, left: hasValidValues ? 42 : 16 };
     const chartW = width - padding.left - padding.right;
     const chartH = height - padding.top - padding.bottom;
     const values = points.map((point) => point.latency_ms).filter((value): value is number => value != null);
@@ -1145,24 +1358,28 @@ function LatencyHistoryChart({ points }: { points: CheckHistoryPoint[] }) {
     const max = values.length ? Math.max(...values) : 1;
     const range = Math.max(1, max - min);
 
-    ctx.strokeStyle = "rgba(255,255,255,0.04)";
-    ctx.lineWidth = 1;
-    for (let i = 0; i <= 4; i++) {
-      const y = padding.top + (chartH / 4) * i;
-      ctx.beginPath();
-      ctx.moveTo(padding.left, y);
-      ctx.lineTo(padding.left + chartW, y);
-      ctx.stroke();
+    if (hasValidValues) {
+      ctx.strokeStyle = "rgba(255,255,255,0.04)";
+      ctx.lineWidth = 1;
+      for (let i = 0; i <= 4; i++) {
+        const y = padding.top + (chartH / 4) * i;
+        ctx.beginPath();
+        ctx.moveTo(padding.left, y);
+        ctx.lineTo(padding.left + chartW, y);
+        ctx.stroke();
+      }
+
+      ctx.fillStyle = "rgba(255,255,255,0.18)";
+      ctx.font = "10px monospace";
+      ctx.textAlign = "right";
+      for (let i = 0; i <= 4; i++) {
+        const value = Math.round(max - (range / 4) * i);
+        ctx.fillText(`${value}ms`, padding.left - 8, padding.top + (chartH / 4) * i + 3);
+      }
     }
 
     ctx.fillStyle = "rgba(255,255,255,0.18)";
     ctx.font = "10px monospace";
-    ctx.textAlign = "right";
-    for (let i = 0; i <= 4; i++) {
-      const value = Math.round(max - (range / 4) * i);
-      ctx.fillText(`${value}ms`, padding.left - 8, padding.top + (chartH / 4) * i + 3);
-    }
-
     ctx.textAlign = "center";
     const start = new Date(points[0]?.checked_at ?? Date.now());
     const end = new Date(points.at(-1)?.checked_at ?? Date.now());

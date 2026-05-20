@@ -1,5 +1,31 @@
 # Changelog
 
+## [0.2.6] - 2026-05-20
+
+### Added
+
+- Mobile node list is now a card layout with full-width rows, page scroll, and a 44px test action — no more horizontal scroll inside a nested scroll container.
+- Node detail modal closes on Escape and on backdrop click, locks background scroll while open, and exposes `role="dialog"` + `aria-label` to screen readers.
+- Mobile node cards are keyboard-accessible (`role="button"`, Enter/Space opens detail) with a visible focus ring, and ignore accidental taps that happen during momentum scrolling.
+
+### Fixed
+
+- Node detail modal now refreshes from the live node list during the 5-second poll; previously it showed a stale snapshot from when it was opened — possibly minutes out of date for monitoring purposes.
+- `apiRequest` reports the real HTTP status (e.g. `请求失败 (HTTP 502)`) when the backend returns non-JSON; previously a `JSON.parse` error masked the actual error.
+- Polling cancels prior in-flight requests via `AbortController`, so a slow `/api/nodes` response can no longer arrive after a newer one and overwrite the dashboard with stale state.
+- Concurrent per-node test actions now track in-flight ids as a Set, so testing node B no longer clears node A's spinner mid-flight.
+- Mobile detail page no longer clips long protocol names (`hysteria` rendered fully instead of truncated).
+- Subscription selector stacks vertically on mobile, so real subscription names (`白菜机场 Hong Kong 专线`) show in full instead of truncating to `白菜机场 Hon...`.
+- Modal close (X) and test (refresh) buttons meet the 44px mobile touch-target minimum.
+- History chart no longer renders phantom `1ms 1ms 1ms 0ms 0ms` y-axis labels when every sample is null; the empty-state message now stands alone.
+- Functional micro-labels (sync status, stat trends, subscription names, server:port, history captions) lifted to readable contrast across the dashboard.
+
+### Changed
+
+- Frontend uses `useMediaQuery` to render either the desktop `<NodeTableRow>` table or the mobile `<NodeMobileCard>` card list, not both — eliminates double React reconciliation on every poll.
+- Extracted `NodeTableRow` / `NodeMobileCard` `React.memo` components for future per-row update skipping.
+- Synced `package-lock.json` version field (was stuck at `0.2.2` while `package.json` shipped `0.2.5`).
+
 ## [0.2.5] - 2026-05-06
 
 ### Added
