@@ -164,6 +164,10 @@ async function apiRequest<T>(path: string, options: RequestInit = {}): Promise<T
   return payload as T;
 }
 
+function isAbortError(error: unknown): boolean {
+  return error instanceof DOMException && error.name === "AbortError";
+}
+
 function normalizeNodeStatus(value: string | null | undefined): NodeStatus {
   if (value === "online" || value === "offline" || value === "timeout") {
     return value;
@@ -432,7 +436,13 @@ export default function VPSMonitorPage() {
     return new Map(subscriptions.map((item) => [item.id, item]));
   }, [subscriptions]);
 
+  const loadAbortRef = useRef<AbortController | null>(null);
+
   const loadData = useCallback(async (silent = false) => {
+    loadAbortRef.current?.abort();
+    const controller = new AbortController();
+    loadAbortRef.current = controller;
+    const { signal } = controller;
     if (!silent) setLoading(true);
     try {
       const params = new URLSearchParams();
@@ -441,10 +451,11 @@ export default function VPSMonitorPage() {
       }
       const query = params.toString() ? `?${params.toString()}` : "";
       const [subscriptionPayload, nodePayload, statsPayload] = await Promise.all([
-        apiRequest<{ subscriptions: Subscription[] }>("/api/subscriptions"),
-        apiRequest<{ nodes: NodeRecord[] }>(`/api/nodes${query}`),
-        apiRequest<Stats>(`/api/nodes/stats${query}`),
+        apiRequest<{ subscriptions: Subscription[] }>("/api/subscriptions", { signal }),
+        apiRequest<{ nodes: NodeRecord[] }>(`/api/nodes${query}`, { signal }),
+        apiRequest<Stats>(`/api/nodes/stats${query}`, { signal }),
       ]);
+      if (signal.aborted) return;
       setSubscriptions(subscriptionPayload.subscriptions);
       if (
         selectedSubscriptionId != null &&
@@ -456,9 +467,13 @@ export default function VPSMonitorPage() {
       setStats(statsPayload);
       setStatusMessage(subscriptionPayload.subscriptions.length ? "状态板已同步" : "暂无配置订阅");
     } catch (error) {
+      if (isAbortError(error) || signal.aborted) return;
       setStatusMessage(error instanceof Error ? error.message : "同步失败");
     } finally {
-      if (!silent) setLoading(false);
+      if (loadAbortRef.current === controller) {
+        loadAbortRef.current = null;
+      }
+      if (!silent && !signal.aborted) setLoading(false);
     }
   }, [selectedSubscriptionId]);
 
@@ -470,6 +485,8 @@ export default function VPSMonitorPage() {
     return () => {
       window.clearTimeout(initialLoad);
       window.clearInterval(id);
+      loadAbortRef.current?.abort();
+      loadAbortRef.current = null;
     };
   }, [loadData]);
 
