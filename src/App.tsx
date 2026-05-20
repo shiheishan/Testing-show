@@ -406,7 +406,7 @@ export default function VPSMonitorPage() {
   const [statusMessage, setStatusMessage] = useState("正在同步状态板...");
   const [testingAll, setTestingAll] = useState(false);
   const [testingNodeId, setTestingNodeId] = useState<number | null>(null);
-  const [detailNode, setDetailNode] = useState<NodeRecord | null>(null);
+  const [detailNodeId, setDetailNodeId] = useState<number | null>(null);
   const [sortBy, setSortBy] = useState<"default" | "latency" | "name">("default");
   const [filterStatus, setFilterStatus] = useState<"all" | NodeStatus>("all");
   const [searchQuery, setSearchQuery] = useState("");
@@ -457,6 +457,11 @@ export default function VPSMonitorPage() {
       window.clearInterval(id);
     };
   }, [loadData]);
+
+  const detailNode = useMemo(
+    () => (detailNodeId == null ? null : nodes.find((node) => node.id === detailNodeId) ?? null),
+    [nodes, detailNodeId],
+  );
 
   const filteredNodes = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
@@ -620,7 +625,7 @@ export default function VPSMonitorPage() {
                     <tr
                       key={node.id}
                       className="text-sm border-b border-white/[0.03] hover:bg-white/[0.03] transition-colors cursor-pointer"
-                      onClick={() => setDetailNode(node)}
+                      onClick={() => setDetailNodeId(node.id)}
                     >
                       <td className="py-3.5 px-5">
                         <div className="flex items-center gap-3">
@@ -666,7 +671,7 @@ export default function VPSMonitorPage() {
                           <button
                             onClick={(event) => {
                               event.stopPropagation();
-                              setDetailNode(node);
+                              setDetailNodeId(node.id);
                             }}
                             className="text-[10px] tracking-wider text-white/30 hover:text-white/70 transition-colors flex items-center gap-1 py-1 px-2 rounded hover:bg-white/5"
                           >
@@ -689,7 +694,7 @@ export default function VPSMonitorPage() {
               return (
                 <li
                   key={node.id}
-                  onClick={() => setDetailNode(node)}
+                  onClick={() => setDetailNodeId(node.id)}
                   className="px-4 py-3.5 flex items-center gap-3 cursor-pointer active:bg-white/[0.04] transition-colors"
                 >
                   <div className={`w-10 h-10 rounded-lg ${status.bg} flex items-center justify-center border ${status.border} flex-shrink-0`}>
@@ -744,7 +749,7 @@ export default function VPSMonitorPage() {
       {detailNode && (
         <NodeDetailModal
           node={detailNode}
-          onClose={() => setDetailNode(null)}
+          onClose={() => setDetailNodeId(null)}
           onTest={handleTestNode}
           testing={testingNodeId === detailNode.id}
         />
@@ -1218,11 +1223,10 @@ function LatencyHistoryChart({ points }: { points: CheckHistoryPoint[] }) {
         const value = Math.round(max - (range / 4) * i);
         ctx.fillText(`${value}ms`, padding.left - 8, padding.top + (chartH / 4) * i + 3);
       }
-    } else {
-      ctx.fillStyle = "rgba(255,255,255,0.18)";
-      ctx.font = "10px monospace";
     }
 
+    ctx.fillStyle = "rgba(255,255,255,0.18)";
+    ctx.font = "10px monospace";
     ctx.textAlign = "center";
     const start = new Date(points[0]?.checked_at ?? Date.now());
     const end = new Date(points.at(-1)?.checked_at ?? Date.now());
