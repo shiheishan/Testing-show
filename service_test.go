@@ -1,13 +1,12 @@
 package main
 
 import (
-	"io"
-	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -534,21 +533,8 @@ func TestRunCheckWaitsForSubscriptionSyncWindow(t *testing.T) {
 	cache := NewResultCache()
 	checkService := NewCheckService(store, cache, service.config)
 
-	started := make(chan struct{})
-	release := make(chan struct{})
-	originalDial := netDialTimeout
-	netDialTimeout = func(network, address string, timeout time.Duration) (net.Conn, error) {
-		select {
-		case <-started:
-		default:
-			close(started)
-		}
-		<-release
-		return nil, timeoutStubError{}
-	}
-	defer func() {
-		netDialTimeout = originalDial
-	}()
+	runner := &blockingProxyRunner{started: make(chan struct{}), release: make(chan struct{})}
+	checkService.proxyRunner = runner
 
 	checkDone := make(chan error, 1)
 	go func() {
@@ -557,9 +543,9 @@ func TestRunCheckWaitsForSubscriptionSyncWindow(t *testing.T) {
 	}()
 
 	select {
-	case <-started:
+	case <-runner.started:
 	case <-time.After(time.Second):
-		t.Fatal("check did not start dialing")
+		t.Fatal("check did not start probing")
 	}
 
 	syncDone := make(chan error, 1)
@@ -573,7 +559,7 @@ func TestRunCheckWaitsForSubscriptionSyncWindow(t *testing.T) {
 	case <-time.After(200 * time.Millisecond):
 	}
 
-	close(release)
+	close(runner.release)
 
 	select {
 	case err := <-checkDone:
@@ -613,21 +599,8 @@ func TestStartAsyncCheckReusesRunningCheck(t *testing.T) {
 	cache := NewResultCache()
 	checkService := NewCheckService(store, cache, service.config)
 
-	started := make(chan struct{})
-	release := make(chan struct{})
-	originalDial := netDialTimeout
-	netDialTimeout = func(network, address string, timeout time.Duration) (net.Conn, error) {
-		select {
-		case <-started:
-		default:
-			close(started)
-		}
-		<-release
-		return nil, timeoutStubError{}
-	}
-	defer func() {
-		netDialTimeout = originalDial
-	}()
+	runner := &blockingProxyRunner{started: make(chan struct{}), release: make(chan struct{})}
+	checkService.proxyRunner = runner
 
 	first, err := checkService.StartAsyncCheck(nil, nil)
 	if err != nil {
@@ -637,9 +610,9 @@ func TestStartAsyncCheckReusesRunningCheck(t *testing.T) {
 		t.Fatalf("first status = %q, want started", first.Status)
 	}
 	select {
-	case <-started:
+	case <-runner.started:
 	case <-time.After(time.Second):
-		t.Fatal("check did not start dialing")
+		t.Fatal("check did not start probing")
 	}
 
 	second, err := checkService.StartAsyncCheck(nil, nil)
@@ -649,7 +622,7 @@ func TestStartAsyncCheckReusesRunningCheck(t *testing.T) {
 	if second.Status != "running" {
 		t.Fatalf("second status = %q, want running", second.Status)
 	}
-	close(release)
+	close(runner.release)
 }
 
 func TestStartAsyncCheckUsesManualCooldown(t *testing.T) {
@@ -670,14 +643,6 @@ func TestStartAsyncCheckUsesManualCooldown(t *testing.T) {
 
 	cache := NewResultCache()
 	checkService := NewCheckService(store, cache, service.config)
-
-	originalDial := netDialTimeout
-	netDialTimeout = func(network, address string, timeout time.Duration) (net.Conn, error) {
-		return nil, timeoutStubError{}
-	}
-	defer func() {
-		netDialTimeout = originalDial
-	}()
 
 	first, err := checkService.StartAsyncCheck(nil, nil)
 	if err != nil {
@@ -712,7 +677,7 @@ func TestStartAsyncCheckUsesManualCooldown(t *testing.T) {
 	}
 }
 
-func TestRunCheckUsesProxyStatusAsPrimaryWhenTransportTimesOut(t *testing.T) {
+func TestRunCheckUsesProxyDelayAsSingleSource(t *testing.T) {
 	store, service := newTestSubscriptionService(t)
 
 	wd, err := os.Getwd()
@@ -741,15 +706,8 @@ func TestRunCheckUsesProxyStatusAsPrimaryWhenTransportTimesOut(t *testing.T) {
 		results: map[int]ProbeResult{
 			nodes[0].ID: {Status: "online", LatencyMS: &proxyLatency},
 		},
+		engineAvailable: true,
 	}
-
-	originalDial := netDialTimeout
-	netDialTimeout = func(network, address string, timeout time.Duration) (net.Conn, error) {
-		return nil, timeoutStubError{}
-	}
-	defer func() {
-		netDialTimeout = originalDial
-	}()
 
 	results, err := checkService.RunCheck(nil, &nodes[0].ID)
 	if err != nil {
@@ -765,20 +723,17 @@ func TestRunCheckUsesProxyStatusAsPrimaryWhenTransportTimesOut(t *testing.T) {
 	if got.LatencyMS == nil || *got.LatencyMS != proxyLatency {
 		t.Fatalf("latency = %v, want %d", got.LatencyMS, proxyLatency)
 	}
-	if got.TransportStatus != "timeout" {
-		t.Fatalf("transport status = %s, want timeout", got.TransportStatus)
-	}
 
 	state, ok := cache.Get(nodes[0].ID)
 	if !ok {
 		t.Fatal("expected cache state")
 	}
-	if state.Status != "online" || state.TransportStatus != "timeout" || state.ProxyStatus != "online" {
+	if state.Status != "online" || state.ProxyStatus != "online" || state.StatusSource != "proxy" {
 		t.Fatalf("unexpected cached state: %+v", state)
 	}
 }
 
-func TestRunCheckIncludesTransportFailureWhenProxyFails(t *testing.T) {
+func TestRunCheckReportsProxyFailureMessageWithoutTransport(t *testing.T) {
 	store, service := newTestSubscriptionService(t)
 
 	wd, err := os.Getwd()
@@ -806,15 +761,8 @@ func TestRunCheckIncludesTransportFailureWhenProxyFails(t *testing.T) {
 		results: map[int]ProbeResult{
 			nodes[0].ID: {Status: "offline", Message: "503 Service Unavailable: delay failed"},
 		},
+		engineAvailable: true,
 	}
-
-	originalDial := netDialTimeout
-	netDialTimeout = func(network, address string, timeout time.Duration) (net.Conn, error) {
-		return nil, timeoutStubError{}
-	}
-	defer func() {
-		netDialTimeout = originalDial
-	}()
 
 	results, err := checkService.RunCheck(nil, &nodes[0].ID)
 	if err != nil {
@@ -830,12 +778,15 @@ func TestRunCheckIncludesTransportFailureWhenProxyFails(t *testing.T) {
 	if got.StatusMessage == nil {
 		t.Fatal("expected status message")
 	}
-	if !strings.Contains(*got.StatusMessage, "delay failed") || !strings.Contains(*got.StatusMessage, "入口探活") || !strings.Contains(*got.StatusMessage, "timeout") {
-		t.Fatalf("message = %q, want proxy and transport failure detail", *got.StatusMessage)
+	if !strings.Contains(*got.StatusMessage, "delay failed") {
+		t.Fatalf("message = %q, want proxy failure detail", *got.StatusMessage)
+	}
+	if strings.Contains(*got.StatusMessage, "入口探活") {
+		t.Fatalf("message should not mention transport probe anymore: %q", *got.StatusMessage)
 	}
 }
 
-func TestRunCheckFallsBackToTransportWhenProxyIsUnknown(t *testing.T) {
+func TestRunCheckKeepsProxyReasonWhenUnknown(t *testing.T) {
 	store, service := newTestSubscriptionService(t)
 
 	wd, err := os.Getwd()
@@ -863,15 +814,8 @@ func TestRunCheckFallsBackToTransportWhenProxyIsUnknown(t *testing.T) {
 		results: map[int]ProbeResult{
 			nodes[0].ID: {Status: "unknown", Message: "mihomo unavailable"},
 		},
+		engineAvailable: false,
 	}
-
-	originalDial := netDialTimeout
-	netDialTimeout = func(network, address string, timeout time.Duration) (net.Conn, error) {
-		return nil, timeoutStubError{}
-	}
-	defer func() {
-		netDialTimeout = originalDial
-	}()
 
 	results, err := checkService.RunCheck(nil, &nodes[0].ID)
 	if err != nil {
@@ -881,83 +825,83 @@ func TestRunCheckFallsBackToTransportWhenProxyIsUnknown(t *testing.T) {
 		t.Fatalf("results = %d, want 1", len(results))
 	}
 	got := results[0]
-	if got.Status != "timeout" || got.StatusSource != "transport" {
-		t.Fatalf("status/source = %s/%s, want timeout/transport", got.Status, got.StatusSource)
+	if got.Status != "unknown" || got.StatusSource != "proxy" {
+		t.Fatalf("status/source = %s/%s, want unknown/proxy", got.Status, got.StatusSource)
 	}
 	if got.ProxyStatus != "unknown" {
 		t.Fatalf("proxy status = %s, want unknown", got.ProxyStatus)
 	}
+	if got.StatusMessage == nil || !strings.Contains(*got.StatusMessage, "mihomo unavailable") {
+		t.Fatalf("message = %v, want proxy-provided reason preserved", got.StatusMessage)
+	}
 }
 
-func TestCheckTransportUsesSubscriptionDoHForEntryProbe(t *testing.T) {
+func TestRunCheckUsesEngineUnavailableMessageWhenNoReason(t *testing.T) {
 	store, service := newTestSubscriptionService(t)
+
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd error: %v", err)
+	}
+	fileURL := (&url.URL{
+		Scheme: "file",
+		Path:   filepath.Join(wd, "samples", "sample-clash.yaml"),
+	}).String()
+	if err := service.SyncConfiguredSubscriptions([]ConfiguredSubscription{{Name: "sample", URL: fileURL}}); err != nil {
+		t.Fatalf("SyncConfiguredSubscriptions error: %v", err)
+	}
+	nodes, err := store.ListNodes(nil, false)
+	if err != nil {
+		t.Fatalf("ListNodes error: %v", err)
+	}
+	if len(nodes) == 0 {
+		t.Fatal("expected sample nodes")
+	}
+
 	cache := NewResultCache()
 	checkService := NewCheckService(store, cache, service.config)
-
-	node := NodeRecord{
-		ID:       1,
-		Name:     "DNS Node",
-		Server:   "sanwang.woainilzr.com",
-		Port:     49501,
-		Protocol: "anytls",
-		ExtraParams: map[string]any{
-			"_mihomo_dns": map[string]any{
-				"nameserver": []any{"https://dns.alidns.com/dns-query"},
-			},
-		},
+	checkService.proxyRunner = stubProxyRunner{
+		results:         map[int]ProbeResult{nodes[0].ID: {Status: "unknown"}},
+		engineAvailable: false,
 	}
 
-	originalTransport := httpRoundTripper
-	httpRoundTripper = roundTripFunc(func(r *http.Request) (*http.Response, error) {
-		return &http.Response{
-			StatusCode: http.StatusOK,
-			Status:     "200 OK",
-			Body: io.NopCloser(strings.NewReader(`{
-				"Status": 0,
-				"Answer": [
-					{"type": 5, "data": "sanwang.woainiliz.com."},
-					{"type": 1, "data": "13.231.111.214"}
-				]
-			}`)),
-			Request: r,
-		}, nil
-	})
-	defer func() {
-		httpRoundTripper = originalTransport
-	}()
-
-	var dialedAddress string
-	originalDial := netDialTimeout
-	netDialTimeout = func(network, address string, timeout time.Duration) (net.Conn, error) {
-		dialedAddress = address
-		return nil, timeoutStubError{}
+	results, err := checkService.RunCheck(nil, &nodes[0].ID)
+	if err != nil {
+		t.Fatalf("RunCheck error: %v", err)
 	}
-	defer func() {
-		netDialTimeout = originalDial
-	}()
-
-	result := checkService.checkTransport(node)
-	if dialedAddress != "13.231.111.214:49501" {
-		t.Fatalf("dialed address = %q, want resolved IP", dialedAddress)
+	got := results[0]
+	if got.Status != "unknown" {
+		t.Fatalf("status = %s, want unknown", got.Status)
 	}
-	if result.Status != "timeout" {
-		t.Fatalf("status = %s, want timeout", result.Status)
+	if got.StatusMessage == nil || !strings.Contains(*got.StatusMessage, engineUnavailableMessage) {
+		t.Fatalf("message = %v, want engine-unavailable message", got.StatusMessage)
 	}
 }
 
 type stubProxyRunner struct {
-	results map[int]ProbeResult
-	err     error
+	results         map[int]ProbeResult
+	engineAvailable bool
 }
 
-func (r stubProxyRunner) Check(nodes []NodeRecord, timeout time.Duration) (map[int]ProbeResult, error) {
-	return r.results, r.err
+func (r stubProxyRunner) Check(nodes []NodeRecord, timeout time.Duration) ProxyCheckOutcome {
+	return ProxyCheckOutcome{Results: r.results, EngineAvailable: r.engineAvailable}
 }
 
-type timeoutStubError struct{}
+// blockingProxyRunner blocks inside Check until released, so tests can hold a
+// RunCheck open (proxy delay is now the only work RunCheck does) and exercise
+// the maintenance lock / async dedup windows.
+type blockingProxyRunner struct {
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
 
-func (timeoutStubError) Error() string   { return "timeout" }
-func (timeoutStubError) Timeout() bool   { return true }
-func (timeoutStubError) Temporary() bool { return false }
-
-var _ net.Error = timeoutStubError{}
+func (r *blockingProxyRunner) Check(nodes []NodeRecord, timeout time.Duration) ProxyCheckOutcome {
+	r.once.Do(func() { close(r.started) })
+	<-r.release
+	results := make(map[int]ProbeResult, len(nodes))
+	for _, node := range nodes {
+		results[node.ID] = ProbeResult{Status: "unknown"}
+	}
+	return ProxyCheckOutcome{Results: results, EngineAvailable: false}
+}

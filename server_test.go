@@ -147,6 +147,29 @@ func TestSubscriptionMutationEndpointsAreRemoved(t *testing.T) {
 	}
 }
 
+func TestNodeStatsExposeEngineAvailable(t *testing.T) {
+	_, _, handler := newTestServer(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/nodes/stats", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("Unmarshal error: %v", err)
+	}
+	value, ok := payload["engine_available"]
+	if !ok {
+		t.Fatalf("stats payload missing engine_available: %s", rec.Body.String())
+	}
+	if _, ok := value.(bool); !ok {
+		t.Fatalf("engine_available should be a bool, got %T", value)
+	}
+}
+
 func TestNodesHandlerDoesNotExposeExtraParams(t *testing.T) {
 	_, service, handler := newTestServer(t)
 

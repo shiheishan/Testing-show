@@ -75,3 +75,14 @@ body {
 .animate-dropdown-out {
   animation: dropdown-out 0.18s ease-in forwards;
 }
+
+/* Respect users who ask for less motion. The engine-unavailable banner spins
+   indefinitely while the error persists, so silence the looping/decorative
+   animations for prefers-reduced-motion. */
+@media (prefers-reduced-motion: reduce) {
+  .animate-spin-silk,
+  .animate-dropdown-in,
+  .animate-dropdown-out {
+    animation: none;
+  }
+}

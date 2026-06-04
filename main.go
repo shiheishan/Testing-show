@@ -76,6 +76,7 @@ func main() {
 		defer cancel()
 		checkScheduler.Stop()
 		refreshScheduler.Stop()
+		checkService.Close()
 		if err := server.Shutdown(shutdownCtx); err != nil {
 			log.Printf("shutdown failed: %v", err)
 		}
