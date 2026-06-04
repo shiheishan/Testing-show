@@ -1,6 +1,6 @@
 # VPS 节点监控
 
-一个自用节点状态板：后端读取根目录 `subscriptions.yaml` 里的订阅链接，解析节点并由部署机器本地检测状态；TCP 探活作为入口诊断，安装 Mihomo 后会用真实代理 delay 作为主状态。
+一个自用节点状态板：后端读取根目录 `subscriptions.yaml` 里的订阅链接，解析节点并由部署机器本地检测状态。节点状态完全来自 Mihomo 的真实代理 delay；测速由每个 DNS 组的常驻 Mihomo 实例承担，不再每轮重新拉起进程。
 
 ## 功能
 
@@ -8,7 +8,9 @@
 - 支持 Clash YAML 和常见 URI 订阅格式
 - SQLite 本地持久化订阅、节点和检测结果
 - 默认每 6 分钟自动检测节点延迟
-- 支持可选 Mihomo 真实代理测速，避免只测入口导致 HY2/TUIC/Hysteria 等节点误判
+- 使用 Mihomo 真实代理 delay 作为唯一状态来源，避免只测入口导致 HY2/TUIC/Hysteria 等节点误判
+- 每个 DNS 组复用一个常驻 Mihomo 实例，配置不变时持续复用，崩溃或配置变更时按指数退避重启，省去每轮拉起进程的开销
+- 没有可用的 Mihomo 时会显示「测速引擎不可用」横幅，节点状态显示为 unknown，不再静默把节点当成离线
 - 会复用 Clash 订阅里的 `dns` 配置解析节点入口域名，减少 VPS 系统 DNS 与客户端 DNS 不一致导致的离线误判
 - 前端可手动触发全部测速或单节点测速
 - 手动测速有后端去重和冷却，多个客户同时点击不会重复开启多轮检测
@@ -49,9 +51,9 @@ check:
   proxy_warmup: true
 ```
 
-如果没有安装 Mihomo，程序会自动降级为原来的 TCP 入口探活。
+如果没有安装 Mihomo（或 `proxy_enabled: false`），测速引擎不可用：前端显示「测速引擎不可用」横幅，所有节点状态读作 unknown。当前没有 TCP 入口探活兜底。
 
-如果订阅是 Clash YAML，程序会保存其中的 `dns.nameserver`、`proxy-server-nameserver`、`fallback` 和 `default-nameserver`，用于 TCP 入口探活和 Mihomo 真实代理测速的域名解析。HTTP DoH 和本地/内网 DoH 地址会被拒绝，只使用安全的 HTTPS DoH 或普通 DNS 服务器。
+如果订阅是 Clash YAML，程序会保存其中的 `dns.nameserver`、`proxy-server-nameserver`、`fallback` 和 `default-nameserver`，用于 Mihomo 真实代理测速的节点域名解析。HTTP DoH 和本地/内网 DoH 地址会被拒绝，只使用安全的 HTTPS DoH 或普通 DNS 服务器。
 
 订阅链接单独放在根目录 `subscriptions.yaml`：
 
@@ -141,7 +143,7 @@ git push origin v0.2.4
 
 - `GET /api/subscriptions`
 - `GET /api/nodes`
-- `GET /api/nodes/stats`
+- `GET /api/nodes/stats` — 返回里包含 `engine_available`，标识测速引擎是否可用
 - `POST /api/nodes/check`
 - `POST /api/nodes/{id}/check`
 
