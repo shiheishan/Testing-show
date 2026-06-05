@@ -1,6 +1,7 @@
 package main
 
 import (
+	"net"
 	"net/http"
 	"testing"
 )
@@ -23,6 +24,14 @@ func TestValidateDoHEndpointBlocksLocalHosts(t *testing.T) {
 }
 
 func TestValidateDoHEndpointAllowsPublicProviders(t *testing.T) {
+	// Hostnames are resolved by the SSRF guard; stub the resolver so the test
+	// is hermetic (no live DNS) and deterministically returns public IPs.
+	restore := lookupHostIPs
+	lookupHostIPs = func(string) ([]net.IP, error) {
+		return []net.IP{net.ParseIP("1.1.1.1")}, nil
+	}
+	defer func() { lookupHostIPs = restore }()
+
 	tests := []string{
 		"https://dns.alidns.com/dns-query",
 		"https://doh.pub/dns-query",
