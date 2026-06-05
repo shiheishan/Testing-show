@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.2.9] - 2026-06-05
+
+### Security
+
+- The DoH/DoT/DoQ SSRF guard now resolves nameserver hostnames and blocks any host that resolves to an internal address, closing a bypass where names like `127.0.0.1.nip.io`, `metadata.google.internal`, or attacker rebind domains pointed the proxy resolver at internal services. The CGNAT range `100.64.0.0/10` (RFC6598) is now blocked alongside loopback/private/link-local, known metadata hostnames are blocked by name, and a host that cannot be resolved fails closed.
+
+### Changed
+
+- `ensureInstance` no longer holds the runner-wide lock across the up-to-`startTimeout` mihomo spawn. Instance starts are single-flighted via an in-flight marker, so a cold start no longer stalls `hasReadyInstance`, instance reaping, or shutdown for seconds (groundwork for concurrent checks).
+
+### Fixed
+
+- `/api/nodes/{id}/history` no longer serializes the retired `transport_status`, `transport_latency_ms`, `proxy_status`, `proxy_latency_ms`, and `status_source` fields, matching `/api/nodes`. The DB columns are retained for historical rows.
+
+### Internal
+
+- Deduplicated the ephemeral and persistent mihomo paths: a shared `probeProxiesConcurrently` for the bounded probe fan-out and a shared `pollMihomo` polling skeleton behind `waitMihomoController` and `waitMihomoReady`. No behavior change.
+
 ## [0.2.8] - 2026-06-05
 
 ### Fixed
