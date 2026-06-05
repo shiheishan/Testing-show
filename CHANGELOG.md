@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.2.11] - 2026-06-05
+
+### Internal
+
+- CI: bumped the release workflow's GitHub Actions off the deprecated Node 20 runtime — `actions/checkout` v4→v6, `actions/setup-go` v5→v6, `actions/setup-node` v4→v6, `actions/upload-artifact` v4→v7, `actions/download-artifact` v4→v8. All now run natively on Node 24; no workflow behavior change. Release artifacts are unchanged.
+
 ## [0.2.10] - 2026-06-05
 
 ### Changed
