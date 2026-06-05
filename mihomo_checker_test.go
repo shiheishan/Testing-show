@@ -212,11 +212,11 @@ func TestNodeToMihomoProxyDoesNotLeakHy2PortHoppingToOtherProtocols(t *testing.T
 
 func TestUnavailableProxyDelayRunnerReportsReason(t *testing.T) {
 	runner := unavailableProxyDelayRunner{message: "missing mihomo"}
-	results, err := runner.Check([]NodeRecord{{ID: 1}}, 0)
-	if err != nil {
-		t.Fatalf("Check error: %v", err)
+	outcome := runner.Check([]NodeRecord{{ID: 1}}, 0)
+	if outcome.EngineAvailable {
+		t.Fatal("engine should be reported unavailable")
 	}
-	got := results[1]
+	got := outcome.Results[1]
 	if got.Status != "unknown" || got.Message != "missing mihomo" {
 		t.Fatalf("unexpected result: %+v", got)
 	}
@@ -265,7 +265,7 @@ func TestWriteMihomoConfigIncludesSubscriptionDNS(t *testing.T) {
 		"nameserver":    []any{"https://doh.pub/dns-query", "https://dns.alidns.com/dns-query"},
 	}
 
-	if err := writeMihomoConfig(configPath, 7890, 9090, proxies, dns); err != nil {
+	if err := writeMihomoConfig(configPath, 7890, 9090, "", proxies, dns); err != nil {
 		t.Fatalf("writeMihomoConfig error: %v", err)
 	}
 	raw, err := os.ReadFile(configPath)
@@ -284,6 +284,48 @@ func TestWriteMihomoConfigIncludesSubscriptionDNS(t *testing.T) {
 	}
 	if !strings.Contains(content, "proxy-server-nameserver:") {
 		t.Fatalf("dns should apply nameservers to proxy server resolution:\n%s", content)
+	}
+}
+
+func TestWriteMihomoConfigStripsUnsafeDoHNameservers(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	proxies := []map[string]any{
+		{"name": "node-a", "type": "anytls", "server": "example.com", "port": 443, "password": "secret"},
+	}
+	dns := map[string]any{
+		"nameserver": []any{
+			"https://dns.alidns.com/dns-query", // public DoH — kept
+			"https://127.0.0.1/dns-query",      // loopback DoH — SSRF, dropped
+			"http://doh.pub/dns-query",         // insecure DoH — dropped
+			"223.5.5.5",                        // plain UDP — kept
+		},
+	}
+
+	if err := writeMihomoConfig(configPath, 7890, 9090, "deadbeef", proxies, dns); err != nil {
+		t.Fatalf("writeMihomoConfig error: %v", err)
+	}
+	raw, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("ReadFile error: %v", err)
+	}
+	content := string(raw)
+	if !strings.Contains(content, "secret: deadbeef") {
+		t.Fatalf("controller secret should be written to config:\n%s", content)
+	}
+	if !strings.Contains(content, "bind-address: 127.0.0.1") {
+		t.Fatalf("mixed-port should bind to localhost:\n%s", content)
+	}
+	if strings.Contains(content, "https://127.0.0.1/dns-query") {
+		t.Fatalf("loopback DoH should be stripped:\n%s", content)
+	}
+	if strings.Contains(content, "http://doh.pub/dns-query") {
+		t.Fatalf("insecure DoH should be stripped:\n%s", content)
+	}
+	if !strings.Contains(content, "https://dns.alidns.com/dns-query") {
+		t.Fatalf("public DoH should be kept:\n%s", content)
+	}
+	if !strings.Contains(content, "223.5.5.5") {
+		t.Fatalf("plain UDP nameserver should be kept:\n%s", content)
 	}
 }
 

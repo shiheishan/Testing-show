@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.2.7] - 2026-06-04
+
+### Changed
+
+- Real proxy speed testing now runs a long-lived mihomo instance per DNS group instead of spawning a fresh one every check round. The process is reused while its config is unchanged and restarted under exponential backoff on config change or crash, cutting repeated process churn on every cycle.
+- Node status is sourced solely from the real proxy delay. The TCP entry-probe track was removed, and the dashboard shows a single status/latency per node instead of separate transport and proxy results.
+- `/api/nodes` no longer returns the retired `transport_status`, `transport_latency_ms`, `proxy_status`, `proxy_latency_ms`, and `status_source` fields; `/api/nodes/stats` now includes `engine_available`. The frontend is updated in lockstep; the DB columns are kept for historical rows.
+- The Mihomo controller now requires a per-instance bearer secret and binds to `127.0.0.1` only.
+
+### Added
+
+- Site-wide "测速引擎不可用" banner plus a per-node message when Mihomo is not installed or fails to start, so an unavailable speed-test engine is visible instead of silently showing every node as unknown.
+
+### Fixed
+
+- A single-node "测速" test (or a per-subscription check) no longer tears down every other DNS group's persistent Mihomo instance, which previously forced a cold restart on the next full check.
+- `waitMihomoReady`/`waitMihomoController` now bail as soon as the Mihomo process exits instead of waiting out the full start timeout, cutting the crash path from ~20s to under 1s.
+- Looping and decorative UI animations (including the engine-unavailable banner spinner) now honor `prefers-reduced-motion`.
+
 ## [0.2.6] - 2026-05-20
 
 ### Added

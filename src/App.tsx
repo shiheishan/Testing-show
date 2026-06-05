@@ -17,7 +17,6 @@ import {
 
 type NodeStatus = "online" | "offline" | "timeout" | "unknown";
 type SubscriptionStatus = "ok" | "failed";
-type StatusSource = "proxy" | "transport";
 
 interface Subscription {
   id: number;
@@ -39,11 +38,6 @@ interface NodeRecord {
   protocol: string;
   status: NodeStatus;
   latency_ms: number | null;
-  transport_status: NodeStatus;
-  transport_latency_ms: number | null;
-  proxy_status: NodeStatus;
-  proxy_latency_ms: number | null;
-  status_source: StatusSource;
   status_message: string | null;
   last_checked: string | null;
   stale_since: string | null;
@@ -55,6 +49,7 @@ interface Stats {
   offline: number;
   timeout: number;
   avg_latency_ms: number | null;
+  engine_available: boolean;
 }
 
 interface CheckResponse {
@@ -65,11 +60,6 @@ interface CheckResponse {
 interface CheckHistoryPoint {
   status: NodeStatus;
   latency_ms: number | null;
-  transport_status: NodeStatus;
-  transport_latency_ms: number | null;
-  proxy_status: NodeStatus;
-  proxy_latency_ms: number | null;
-  status_source: StatusSource;
   status_message: string | null;
   checked_at: string;
 }
@@ -187,20 +177,11 @@ function normalizeNodeStatus(value: string | null | undefined): NodeStatus {
   return "unknown";
 }
 
-function normalizeStatusSource(value: string | null | undefined): StatusSource {
-  return value === "proxy" ? "proxy" : "transport";
-}
-
 function normalizeNodeRecord(node: NodeRecord): NodeRecord {
   return {
     ...node,
     display_order: node.display_order ?? node.id,
     status: normalizeNodeStatus(node.status),
-    transport_status: normalizeNodeStatus(node.transport_status),
-    transport_latency_ms: node.transport_latency_ms ?? null,
-    proxy_status: normalizeNodeStatus(node.proxy_status),
-    proxy_latency_ms: node.proxy_latency_ms ?? null,
-    status_source: normalizeStatusSource(node.status_source),
     status_message: node.status_message ?? null,
   };
 }
@@ -432,7 +413,7 @@ const SearchBox = memo(function SearchBox({
 export default function VPSMonitorPage() {
   const [subscriptions, setSubscriptions] = useState<Subscription[]>([]);
   const [nodes, setNodes] = useState<NodeRecord[]>([]);
-  const [stats, setStats] = useState<Stats>({ total: 0, online: 0, offline: 0, timeout: 0, avg_latency_ms: null });
+  const [stats, setStats] = useState<Stats>({ total: 0, online: 0, offline: 0, timeout: 0, avg_latency_ms: null, engine_available: true });
   const [loading, setLoading] = useState(true);
   const [statusMessage, setStatusMessage] = useState("正在同步状态板...");
   const [testingAll, setTestingAll] = useState(false);
@@ -611,6 +592,18 @@ export default function VPSMonitorPage() {
             从配置订阅同步节点，由部署机器本地检测连通性与延迟 · 当前范围 {stats.total} 个节点
           </p>
         </div>
+
+        {!stats.engine_available && (
+          <div className="liquid-glass rounded-2xl border border-red-400/20 bg-red-500/[0.08] px-5 py-4 mb-8 flex items-start gap-3.5">
+            <RefreshCw className="w-5 h-5 text-red-300/90 shrink-0 mt-0.5 animate-spin-silk" />
+            <div className="min-w-0">
+              <div className="text-sm font-medium text-red-200/90">测速引擎不可用</div>
+              <div className="text-xs text-red-200/55 mt-1 leading-relaxed">
+                mihomo 未安装或未能启动，节点延迟暂时无法检测；引擎恢复后状态会自动刷新。
+              </div>
+            </div>
+          </div>
+        )}
 
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
           <StatCard icon={Server} label="总节点" value={stats.total} color="text-white/80" />
@@ -1139,35 +1132,6 @@ function SubscriptionPanelItem({
   );
 }
 
-function ProbeSummary({
-  label,
-  status,
-  latency,
-  active,
-}: {
-  label: string;
-  status: NodeStatus;
-  latency: number | null;
-  active: boolean;
-}) {
-  const config = statusConfig[status];
-  return (
-    <div className={`rounded-xl border px-3.5 py-3 ${active ? "border-white/12 bg-white/[0.045]" : "border-white/[0.06] bg-white/[0.02]"}`}>
-      <div className="flex items-center justify-between gap-3">
-        <span className="text-[10px] text-white/30 tracking-wider uppercase">{label}</span>
-        {active && <span className="text-[9px] text-sky-300/80 bg-sky-400/10 border border-sky-400/15 px-1.5 py-0.5 rounded-full">主状态</span>}
-      </div>
-      <div className="mt-2 flex items-center justify-between gap-3">
-        <span className={`inline-flex items-center gap-1.5 text-sm ${config.color}`}>
-          <span className={`w-1.5 h-1.5 rounded-full ${config.dot}`} />
-          {config.label}
-        </span>
-        <LatencyBadge latency={latency} />
-      </div>
-    </div>
-  );
-}
-
 function NodeDetailModal({
   node,
   onClose,
@@ -1200,11 +1164,6 @@ function NodeDetailModal({
               ...point,
               status: normalizeNodeStatus(point.status),
               latency_ms: point.latency_ms ?? null,
-              transport_status: normalizeNodeStatus(point.transport_status),
-              transport_latency_ms: point.transport_latency_ms ?? null,
-              proxy_status: normalizeNodeStatus(point.proxy_status),
-              proxy_latency_ms: point.proxy_latency_ms ?? null,
-              status_source: normalizeStatusSource(point.status_source),
               status_message: point.status_message ?? null,
             })),
             loading: false,
@@ -1293,20 +1252,6 @@ function NodeDetailModal({
             </div>
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <ProbeSummary
-              label="真实代理"
-              status={node.proxy_status}
-              latency={node.proxy_latency_ms}
-              active={node.status_source === "proxy"}
-            />
-            <ProbeSummary
-              label="入口探活"
-              status={node.transport_status}
-              latency={node.transport_latency_ms}
-              active={node.status_source === "transport"}
-            />
-          </div>
           {node.status_message && (
             <div className="rounded-xl border border-white/[0.06] bg-white/[0.025] px-3.5 py-3 text-xs text-white/35 break-words">
               {node.status_message}

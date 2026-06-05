@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
-	"net"
 	"net/http"
 	"net/url"
 	"path"
@@ -335,23 +334,41 @@ func parseSubscriptionURL(rawURL string) (*url.URL, APIError) {
 }
 
 type CheckService struct {
-	store         *Store
-	cache         *ResultCache
-	config        Config
-	proxyRunner   ProxyDelayRunner
-	mu            sync.Mutex
-	active        bool
-	lastManualRun map[string]time.Time
+	store           *Store
+	cache           *ResultCache
+	config          Config
+	proxyRunner     ProxyDelayRunner
+	mu              sync.Mutex
+	active          bool
+	engineAvailable bool
+	lastManualRun   map[string]time.Time
 }
 
 func NewCheckService(store *Store, cache *ResultCache, config Config) *CheckService {
 	return &CheckService{
-		store:         store,
-		cache:         cache,
-		config:        config,
-		proxyRunner:   NewProxyDelayRunner(config),
-		lastManualRun: map[string]time.Time{},
+		store:           store,
+		cache:           cache,
+		config:          config,
+		proxyRunner:     NewProxyDelayRunner(config),
+		engineAvailable: true,
+		lastManualRun:   map[string]time.Time{},
 	}
+}
+
+// Close releases the proxy runner's long-lived resources (persistent mihomo
+// processes). Safe to call on shutdown even if the runner has none.
+func (s *CheckService) Close() {
+	if closer, ok := s.proxyRunner.(interface{ Close() error }); ok {
+		_ = closer.Close()
+	}
+}
+
+// EngineAvailable reports whether the most recent check found the speed-test
+// engine usable. Drives the DT2 system-level banner.
+func (s *CheckService) EngineAvailable() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.engineAvailable
 }
 
 type CheckStartResult struct {
@@ -365,8 +382,17 @@ type ProbeResult struct {
 	Message   string
 }
 
+// ProxyCheckOutcome carries the per-node proxy delay results plus a single
+// engine-availability bit. EngineAvailable is false when the speed-test engine
+// as a whole could not run (mihomo missing/disabled or no instance came up),
+// which drives both the per-node "测速引擎不可用" message and the DT2 banner.
+type ProxyCheckOutcome struct {
+	Results         map[int]ProbeResult
+	EngineAvailable bool
+}
+
 type ProxyDelayRunner interface {
-	Check(nodes []NodeRecord, timeout time.Duration) (map[int]ProbeResult, error)
+	Check(nodes []NodeRecord, timeout time.Duration) ProxyCheckOutcome
 }
 
 func (s *CheckService) StartAsyncCheck(subscriptionID *int, nodeID *int) (CheckStartResult, error) {
@@ -437,51 +463,33 @@ func (s *CheckService) RunCheck(subscriptionID *int, nodeID *int) ([]CheckResult
 	if len(nodes) == 0 {
 		return nil, nil
 	}
-	proxyResults := map[int]ProbeResult{}
-	proxyErrMessage := ""
+
+	outcome := ProxyCheckOutcome{Results: map[int]ProbeResult{}}
 	if s.proxyRunner != nil {
-		items, err := s.proxyRunner.Check(nodes, s.config.CheckTimeout)
-		if err != nil {
-			proxyErrMessage = err.Error()
-		} else {
-			proxyResults = items
-		}
-	}
-
-	sem := make(chan struct{}, s.config.CheckConcurrency)
-	transportResults := make(chan struct {
-		node   NodeRecord
-		result ProbeResult
-	}, len(nodes))
-	var wg sync.WaitGroup
-
-	for _, node := range nodes {
-		wg.Add(1)
-		node := node
-		go func() {
-			defer wg.Done()
-			sem <- struct{}{}
-			defer func() { <-sem }()
-			transportResults <- struct {
-				node   NodeRecord
-				result ProbeResult
-			}{node: node, result: s.checkTransport(node)}
-		}()
-	}
-
-	wg.Wait()
-	close(transportResults)
-
-	items := make([]CheckResult, 0, len(nodes))
-	for item := range transportResults {
-		proxyResult, ok := proxyResults[item.node.ID]
-		if !ok {
-			proxyResult = ProbeResult{Status: "unknown"}
-			if proxyErrMessage != "" {
-				proxyResult.Message = proxyErrMessage
+		outcome = s.proxyRunner.Check(nodes, s.config.CheckTimeout)
+		// Only a full check (all active nodes, no subscription/node filter)
+		// represents the complete desired set, so only it may reap persistent
+		// instances for groups that genuinely went away. Scoped checks must not
+		// reap — otherwise a single-node "test" tears down every other group's
+		// instance and forces a cold restart next round.
+		if subscriptionID == nil && nodeID == nil {
+			if reaper, ok := s.proxyRunner.(interface{ ReapAbsent([]NodeRecord) }); ok {
+				reaper.ReapAbsent(nodes)
 			}
 		}
-		items = append(items, combineProbeResults(item.node.ID, item.result, proxyResult, time.Now().UTC().Format(time.RFC3339)))
+	}
+	s.mu.Lock()
+	s.engineAvailable = outcome.EngineAvailable
+	s.mu.Unlock()
+
+	checkedAt := time.Now().UTC().Format(time.RFC3339)
+	items := make([]CheckResult, 0, len(nodes))
+	for _, node := range nodes {
+		result, ok := outcome.Results[node.ID]
+		if !ok {
+			result = ProbeResult{Status: "unknown"}
+		}
+		items = append(items, proxyCheckResult(node.ID, result, outcome.EngineAvailable, checkedAt))
 	}
 	if err := s.store.InsertCheckResults(items, s.config.CheckRetention); err != nil {
 		return nil, err
@@ -490,94 +498,35 @@ func (s *CheckService) RunCheck(subscriptionID *int, nodeID *int) ([]CheckResult
 	return items, nil
 }
 
-func (s *CheckService) checkTransport(node NodeRecord) ProbeResult {
-	started := time.Now()
-	connection, address, err := s.dialNodeTransport(node)
-	if err == nil && connection != nil {
-		_ = connection.Close()
-		latency := int(time.Since(started).Milliseconds())
-		return ProbeResult{Status: "online", LatencyMS: &latency}
-	}
-	status := "offline"
-	if isTimeoutError(err) {
-		status = "timeout"
-	}
-	message := err.Error()
-	if address != "" && !strings.Contains(message, address) {
-		message = fmt.Sprintf("%s: %s", address, message)
-	}
-	return ProbeResult{Status: status, Message: message}
-}
+// engineUnavailableMessage is shown for a node when the speed-test engine could
+// not produce any result and reported no node-specific reason.
+const engineUnavailableMessage = "测速引擎不可用：mihomo 未安装或未能启动"
 
-func (s *CheckService) dialNodeTransport(node NodeRecord) (net.Conn, string, error) {
-	port := strconv.Itoa(node.Port)
-	address := netJoinHostPort(node.Server, port)
-	ips, resolveErr := resolveNodeServer(node, s.config.CheckTimeout)
-	if resolveErr == nil && len(ips) > 0 {
-		var lastErr error
-		for _, ip := range ips {
-			resolvedAddress := netJoinHostPort(ip, port)
-			connection, err := netDialTimeout("tcp", resolvedAddress, s.config.CheckTimeout)
-			if err == nil {
-				return connection, resolvedAddress, nil
-			}
-			lastErr = err
-		}
-		if lastErr != nil {
-			return nil, netJoinHostPort(ips[len(ips)-1], port), lastErr
-		}
-	}
-	connection, err := netDialTimeout("tcp", address, s.config.CheckTimeout)
-	return connection, address, err
-}
-
-func combineProbeResults(nodeID int, transport ProbeResult, proxy ProbeResult, checkedAt string) CheckResult {
-	transport.Status = normalizeCheckStatus(transport.Status)
-	proxy.Status = normalizeCheckStatus(proxy.Status)
-	status := transport.Status
-	latency := transport.LatencyMS
-	source := "transport"
-	message := transport.Message
-	if proxy.Status != "unknown" {
-		status = proxy.Status
-		latency = proxy.LatencyMS
-		source = "proxy"
-		message = proxy.Message
-		if proxy.Status != "online" && strings.TrimSpace(transport.Message) != "" {
-			message = combineStatusMessages(proxy.Message, fmt.Sprintf("入口探活: %s", transport.Message))
-		}
-	} else if strings.TrimSpace(proxy.Message) != "" {
-		message = proxy.Message
+// proxyCheckResult builds a CheckResult from a single source of truth — the
+// real proxy delay. Status comes only from the proxy probe; when the engine is
+// down and the probe carries no message, a clear engine-unavailable message is
+// attached instead of silently showing offline. The transport_* fields are left
+// empty (the entry-TCP track is gone); T9 stops persisting them entirely.
+func proxyCheckResult(nodeID int, proxy ProbeResult, engineAvailable bool, checkedAt string) CheckResult {
+	status := normalizeCheckStatus(proxy.Status)
+	message := strings.TrimSpace(proxy.Message)
+	if status == "unknown" && message == "" && !engineAvailable {
+		message = engineUnavailableMessage
 	}
 	var messagePtr *string
-	if strings.TrimSpace(message) != "" {
-		clean := strings.TrimSpace(message)
-		messagePtr = &clean
+	if message != "" {
+		messagePtr = &message
 	}
 	return CheckResult{
-		NodeID:             nodeID,
-		Status:             status,
-		LatencyMS:          latency,
-		TransportStatus:    transport.Status,
-		TransportLatencyMS: transport.LatencyMS,
-		ProxyStatus:        proxy.Status,
-		ProxyLatencyMS:     proxy.LatencyMS,
-		StatusSource:       source,
-		StatusMessage:      messagePtr,
-		CheckedAt:          checkedAt,
+		NodeID:         nodeID,
+		Status:         status,
+		LatencyMS:      proxy.LatencyMS,
+		ProxyStatus:    status,
+		ProxyLatencyMS: proxy.LatencyMS,
+		StatusSource:   "proxy",
+		StatusMessage:  messagePtr,
+		CheckedAt:      checkedAt,
 	}
-}
-
-func combineStatusMessages(primary string, secondary string) string {
-	primary = strings.TrimSpace(primary)
-	secondary = strings.TrimSpace(secondary)
-	if primary == "" {
-		return secondary
-	}
-	if secondary == "" || strings.Contains(primary, secondary) {
-		return primary
-	}
-	return primary + "；" + secondary
 }
 
 type Scheduler struct {
@@ -698,23 +647,18 @@ func NewServer(deps ServerDeps) http.Handler {
 				}
 			}
 			responseNodes = append(responseNodes, map[string]any{
-				"id":                   node.ID,
-				"subscription_id":      node.SubscriptionID,
-				"display_order":        node.DisplayOrder,
-				"name":                 node.Name,
-				"server":               node.Server,
-				"port":                 node.Port,
-				"protocol":             node.Protocol,
-				"status":               status,
-				"latency_ms":           latency,
-				"transport_status":     state.TransportStatus,
-				"transport_latency_ms": state.TransportLatencyMS,
-				"proxy_status":         state.ProxyStatus,
-				"proxy_latency_ms":     state.ProxyLatencyMS,
-				"status_source":        state.StatusSource,
-				"status_message":       state.StatusMessage,
-				"last_checked":         lastChecked,
-				"stale_since":          node.StaleSince,
+				"id":              node.ID,
+				"subscription_id": node.SubscriptionID,
+				"display_order":   node.DisplayOrder,
+				"name":            node.Name,
+				"server":          node.Server,
+				"port":            node.Port,
+				"protocol":        node.Protocol,
+				"status":          status,
+				"latency_ms":      latency,
+				"status_message":  state.StatusMessage,
+				"last_checked":    lastChecked,
+				"stale_since":     node.StaleSince,
 			})
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
@@ -762,11 +706,12 @@ func NewServer(deps ServerDeps) http.Handler {
 			average = latencySum / latencyCount
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
-			"total":          len(nodes),
-			"online":         counts["online"],
-			"offline":        counts["offline"],
-			"timeout":        counts["timeout"],
-			"avg_latency_ms": average,
+			"total":            len(nodes),
+			"online":           counts["online"],
+			"offline":          counts["offline"],
+			"timeout":          counts["timeout"],
+			"avg_latency_ms":   average,
+			"engine_available": deps.CheckService.EngineAvailable(),
 		})
 	})
 

@@ -530,27 +530,25 @@ func (s *Store) InsertCheckResults(results []CheckResult, retention time.Duratio
 		if result.LatencyMS != nil {
 			latencyValue = strconv.Itoa(*result.LatencyMS)
 		}
-		transportLatencyValue := "NULL"
-		if result.TransportLatencyMS != nil {
-			transportLatencyValue = strconv.Itoa(*result.TransportLatencyMS)
-		}
 		proxyLatencyValue := "NULL"
 		if result.ProxyLatencyMS != nil {
 			proxyLatencyValue = strconv.Itoa(*result.ProxyLatencyMS)
 		}
+		// The TCP entry-probe track is gone (single source = proxy delay), so we
+		// stop writing the transport_* columns: new rows always store
+		// 'unknown'/NULL there. The columns are kept, not dropped — old SQLite
+		// can't DROP COLUMN, and historical rows still read meaningfully. T9.
 		script.WriteString(fmt.Sprintf(`
 INSERT INTO check_results (
 	node_id, status, latency_ms,
 	transport_status, transport_latency_ms,
 	proxy_status, proxy_latency_ms,
 	status_source, status_message, checked_at
-) VALUES (%d, %s, %s, %s, %s, %s, %s, %s, %s, %s);
+) VALUES (%d, %s, %s, 'unknown', NULL, %s, %s, %s, %s, %s);
 `,
 			result.NodeID,
 			sqlText(normalizeCheckStatus(result.Status)),
 			latencyValue,
-			sqlText(normalizeCheckStatus(result.TransportStatus)),
-			transportLatencyValue,
 			sqlText(normalizeCheckStatus(result.ProxyStatus)),
 			proxyLatencyValue,
 			sqlText(normalizeStatusSource(result.StatusSource)),

@@ -33,3 +33,6 @@ src/assets/vite.svg
 *.sln
 *.sw?
 .gstack/
+
+# Go build output
+/nodepanel
