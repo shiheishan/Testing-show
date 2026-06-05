@@ -13,7 +13,8 @@ check:
   retention: 24h
   # 客户连续点击测速时，冷却期内直接复用最近结果。
   manual_cooldown: 15s
-  # TCP 探活只做入口诊断；如果机器上能找到 mihomo，则用真实代理 delay 作为主状态。
+  # proxy_enabled=true 时用真实代理 delay 作为节点状态（需要机器上能找到 mihomo）；
+  # 关闭则测速引擎不可用、节点状态读作 unknown（无 TCP 探活兜底）。
   proxy_enabled: true
   proxy_url: https://www.gstatic.com/generate_204
   # 可选：配置多个真实代理测速目标。任意一个目标成功即认为代理可用。
@@ -21,7 +22,7 @@ check:
   #   - https://www.gstatic.com/generate_204
   #   - https://cp.cloudflare.com/generate_204
   #   - https://www.apple.com/library/test/success.html
-  # 真实代理测速比 TCP 探活重，单独限流，避免小 VPS 同时压太多节点。
+  # 真实代理测速较重，单独限流，避免小 VPS 同时压太多节点。
   proxy_concurrency: 10
   # 先跑一次预热请求，再记录第二次测速，降低冷握手对延迟的影响。
   proxy_warmup: true

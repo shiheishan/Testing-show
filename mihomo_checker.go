@@ -90,7 +90,7 @@ type mihomoProxyCandidate struct {
 
 func NewProxyDelayRunner(config Config) ProxyDelayRunner {
 	if !config.ProxyCheckEnabled {
-		return unavailableProxyDelayRunner{message: "真实代理测速已关闭，当前仅运行入口 TCP 探活"}
+		return unavailableProxyDelayRunner{message: "真实代理测速已关闭（proxy_enabled: false），测速引擎不可用"}
 	}
 	path := strings.TrimSpace(config.MihomoPath)
 	if path == "" {
