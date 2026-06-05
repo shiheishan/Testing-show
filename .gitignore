@@ -17,10 +17,10 @@ subscriptions.yaml
 config.yaml
 .gocache/
 data/
-src/App.css
-src/assets/hero.png
-src/assets/react.svg
-src/assets/vite.svg
+web/src/App.css
+web/src/assets/hero.png
+web/src/assets/react.svg
+web/src/assets/vite.svg
 
 # Editor directories and files
 .vscode/*

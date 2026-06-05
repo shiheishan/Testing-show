@@ -31,6 +31,7 @@ jobs:
         with:
           node-version: 24
           cache: npm
+          cache-dependency-path: web/package-lock.json
 
       - name: Install runtime test dependency
         run: |
@@ -38,19 +39,22 @@ jobs:
           sudo apt-get install -y sqlite3
 
       - name: Install frontend dependencies
+        working-directory: web
         run: npm ci
 
       - name: Validate tag matches VERSION
         run: test "${GITHUB_REF_NAME#v}" = "$(tr -d '[:space:]' < VERSION)"
 
       - name: Lint frontend
+        working-directory: web
         run: npm run lint
 
       - name: Build frontend
+        working-directory: web
         run: npm run build
 
       - name: Test backend
-        run: GOCACHE="$PWD/.gocache" go test .
+        run: GOCACHE="$PWD/.gocache" go test ./...
 
   build:
     name: Build ${{ matrix.target.os }}-${{ matrix.target.arch }}
@@ -84,8 +88,10 @@ jobs:
         with:
           node-version: 24
           cache: npm
+          cache-dependency-path: web/package-lock.json
 
       - name: Install frontend dependencies
+        working-directory: web
         run: npm ci
 
       - name: Validate tag matches VERSION
