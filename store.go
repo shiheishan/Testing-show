@@ -71,13 +71,17 @@ type CheckResult struct {
 }
 
 type CheckHistoryPoint struct {
-	Status             string  `json:"status"`
-	LatencyMS          *int    `json:"latency_ms"`
-	TransportStatus    string  `json:"transport_status"`
-	TransportLatencyMS *int    `json:"transport_latency_ms"`
-	ProxyStatus        string  `json:"proxy_status"`
-	ProxyLatencyMS     *int    `json:"proxy_latency_ms"`
-	StatusSource       string  `json:"status_source"`
+	Status    string `json:"status"`
+	LatencyMS *int   `json:"latency_ms"`
+	// The transport/proxy split was retired in T9 (v0.2.7). The DB columns are
+	// kept for historical rows and still scanned so normalizeCheckState can
+	// derive status/latency from the proxy track, but they are no longer part
+	// of the API contract (matching /api/nodes, which already dropped them).
+	TransportStatus    string  `json:"-"`
+	TransportLatencyMS *int    `json:"-"`
+	ProxyStatus        string  `json:"-"`
+	ProxyLatencyMS     *int    `json:"-"`
+	StatusSource       string  `json:"-"`
 	StatusMessage      *string `json:"status_message"`
 	CheckedAt          string  `json:"checked_at"`
 }
