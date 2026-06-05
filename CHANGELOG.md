@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.2.8] - 2026-06-05
+
+### Fixed
+
+- The proxy-disabled (`proxy_enabled: false`) status message no longer claims an entry "TCP 探活" runs. The TCP entry-probe track was removed in 0.2.7, so the message now reports the speed-test engine as unavailable. Updated the stale `config.yaml.example` comments to match.
+
 ## [0.2.7] - 2026-06-04
 
 ### Changed
