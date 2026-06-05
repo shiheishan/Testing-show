@@ -35,16 +35,71 @@ func validateDoHEndpoint(endpoint *url.URL) error {
 	return nil
 }
 
+// cgnatNet is the RFC6598 carrier-grade NAT range (100.64.0.0/10). Go's
+// net.IP.IsPrivate covers RFC1918 / RFC4193 but not CGNAT, which is routable to
+// internal infra and is a known metadata-fronting path, so it is checked
+// explicitly.
+var cgnatNet = mustParseCIDR("100.64.0.0/10")
+
+func mustParseCIDR(cidr string) *net.IPNet {
+	_, network, err := net.ParseCIDR(cidr)
+	if err != nil {
+		panic(fmt.Sprintf("invalid CIDR %q: %v", cidr, err))
+	}
+	return network
+}
+
+// blockedMetadataHosts are cloud metadata / internal service hostnames that must
+// never be used as a proxy DNS resolver target, regardless of what they resolve
+// to (or whether resolution is even available).
+var blockedMetadataHosts = map[string]struct{}{
+	"metadata":                 {},
+	"metadata.google.internal": {},
+	"metadata.goog":            {},
+}
+
+// isBlockedIP reports whether an IP must never be used as a resolver target:
+// loopback, private (RFC1918/RFC4193), CGNAT (RFC6598), link-local, multicast,
+// or unspecified. IPv4-mapped IPv6 addresses are unwrapped by net.IP's methods.
+func isBlockedIP(ip net.IP) bool {
+	return ip.IsLoopback() ||
+		ip.IsPrivate() ||
+		ip.IsLinkLocalUnicast() ||
+		ip.IsLinkLocalMulticast() ||
+		ip.IsInterfaceLocalMulticast() ||
+		ip.IsUnspecified() ||
+		cgnatNet.Contains(ip)
+}
+
+// isBlockedDoHHost reports whether a DoH/DoT/DoQ host is an SSRF risk. IP
+// literals are checked directly; hostnames are resolved and blocked if ANY
+// resolved address is internal (catching rebind-style names like
+// 127.0.0.1.nip.io and metadata fronts). Resolution failure fails closed: a host
+// we cannot prove is safe is not used as a resolver target.
 func isBlockedDoHHost(host string) bool {
 	host = strings.ToLower(strings.Trim(strings.TrimSpace(host), "[]"))
+	if host == "" {
+		return true
+	}
 	if host == "localhost" || strings.HasSuffix(host, ".localhost") {
 		return true
 	}
-	ip := net.ParseIP(host)
-	if ip == nil {
-		return false
+	if _, blocked := blockedMetadataHosts[host]; blocked {
+		return true
 	}
-	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified()
+	if ip := net.ParseIP(host); ip != nil {
+		return isBlockedIP(ip)
+	}
+	addrs, err := lookupHostIPs(host)
+	if err != nil || len(addrs) == 0 {
+		return true
+	}
+	for _, ip := range addrs {
+		if isBlockedIP(ip) {
+			return true
+		}
+	}
+	return false
 }
 
 func stringListFromAny(value any) []string {

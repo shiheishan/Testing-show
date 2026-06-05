@@ -45,6 +45,7 @@ type MihomoDelayRunner struct {
 
 	mu        sync.Mutex
 	instances map[string]*mihomoInstance
+	starting  map[string]*mihomoStart
 	backoff   map[string]*mihomoBackoff
 	nextGen   uint64
 	closed    bool
@@ -57,10 +58,22 @@ type mihomoBackoff struct {
 	nextAttempt time.Time
 }
 
+// mihomoStart marks an in-flight (re)start for one DNS group. Its done channel
+// is closed when the start finishes, so concurrent ensureInstance callers for
+// the same key wait on the result instead of spawning a duplicate process. The
+// blocking spawn happens with r.mu released; the marker is what keeps the slot
+// claimed in the meantime (P2 fix: ensureInstance no longer holds r.mu across
+// the up-to-startTimeout spawn).
+type mihomoStart struct {
+	done chan struct{}
+}
+
 // mihomoInstance is a single long-lived mihomo process serving one DNS group.
-// All mutable fields are written only under MihomoDelayRunner.mu (no background
-// supervisor mutates them), so probeInstance can read baseURL/secret/loaded
-// without a per-instance lock once ensureInstance has returned the instance.
+// baseURL/secret/loaded/generation are set by the starting goroutine before the
+// instance is published into MihomoDelayRunner.instances and are never mutated
+// afterwards, so probeInstance can read them without a per-instance lock once
+// ensureInstance has returned the instance. The only field touched after
+// publication is dead, guarded by its own deadMu.
 type mihomoInstance struct {
 	key        string
 	generation uint64
@@ -115,6 +128,7 @@ func NewProxyDelayRunner(config Config) ProxyDelayRunner {
 		concurrency:  concurrency,
 		warmup:       config.ProxyCheckWarmup,
 		instances:    map[string]*mihomoInstance{},
+		starting:     map[string]*mihomoStart{},
 		backoff:      map[string]*mihomoBackoff{},
 	}
 }
@@ -216,37 +230,80 @@ func (r *MihomoDelayRunner) checkGroup(key string, group []mihomoProxyCandidate,
 // under an exponential backoff so a crash-looping config is not re-spawned on
 // every check (T5).
 func (r *MihomoDelayRunner) ensureInstance(key string, group []mihomoProxyCandidate, timeout time.Duration) (*mihomoInstance, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if r.closed {
-		return nil, errors.New("mihomo manager closed")
-	}
 	hash := mihomoConfigHash(group)
-	if inst := r.instances[key]; inst != nil {
-		if inst.alive() && inst.configHash == hash {
+	for {
+		r.mu.Lock()
+		if r.closed {
+			r.mu.Unlock()
+			return nil, errors.New("mihomo manager closed")
+		}
+		if inst := r.instances[key]; inst != nil && inst.alive() && inst.configHash == hash {
+			r.mu.Unlock()
 			return inst, nil
 		}
-		inst.stop()
+		// Another goroutine is already (re)starting this key: wait for it to
+		// finish, then re-evaluate (it may have published an instance matching
+		// our hash, or set a backoff we must honour).
+		if st := r.starting[key]; st != nil {
+			r.mu.Unlock()
+			<-st.done
+			continue
+		}
+		if bo := r.backoff[key]; bo != nil && time.Now().Before(bo.nextAttempt) {
+			r.mu.Unlock()
+			return nil, fmt.Errorf("mihomo restart backing off for group %q", key)
+		}
+		// Claim the slot: pull any stale/mismatched instance out of the map and
+		// register an in-flight marker so concurrent callers for this key wait
+		// on us rather than spawning a duplicate. The blocking spawn then runs
+		// with r.mu released, so hasReadyInstance/reapInstances/Close are not
+		// stalled for up to startTimeout.
+		stale := r.instances[key]
 		delete(r.instances, key)
+		st := &mihomoStart{done: make(chan struct{})}
+		if r.starting == nil {
+			r.starting = map[string]*mihomoStart{}
+		}
+		r.starting[key] = st
+		r.mu.Unlock()
+
+		if stale != nil {
+			stale.stop()
+		}
+		inst, err := r.startInstance(key, group, hash)
+
+		r.mu.Lock()
+		delete(r.starting, key)
+		close(st.done)
+		if err != nil {
+			r.recordStartFailure(key)
+			r.mu.Unlock()
+			return nil, err
+		}
+		if r.closed {
+			// The manager was closed while we were spawning; don't leak the
+			// freshly started process (Close already drained the map, so it
+			// will not be stopped by anyone else).
+			r.mu.Unlock()
+			inst.stop()
+			return nil, errors.New("mihomo manager closed")
+		}
+		r.nextGen++
+		inst.generation = r.nextGen
+		delete(r.backoff, key)
+		r.instances[key] = inst
+		r.mu.Unlock()
+		return inst, nil
 	}
-	if bo := r.backoff[key]; bo != nil && time.Now().Before(bo.nextAttempt) {
-		return nil, fmt.Errorf("mihomo restart backing off for group %q", key)
-	}
-	inst, err := r.startInstance(key, group, hash)
-	if err != nil {
-		r.recordStartFailure(key)
-		return nil, err
-	}
-	delete(r.backoff, key)
-	r.instances[key] = inst
-	return inst, nil
 }
 
 // startInstance launches a long-lived mihomo process for the group, waits for
 // its controller to actually load proxies (T6 readiness gate, not just "HTTP
 // up"), and reconciles which nodes were loaded (T8). Ports are reallocated and
-// the spawn retried once to ride out a port-bind race (T7). Must be called with
-// r.mu held (it bumps r.nextGen).
+// the spawn retried once to ride out a port-bind race (T7). It MUST be called
+// with r.mu released — it blocks for up to startTimeout — and the returned
+// instance is published (and its generation assigned) by ensureInstance under
+// the lock.
 func (r *MihomoDelayRunner) startInstance(key string, group []mihomoProxyCandidate, hash string) (*mihomoInstance, error) {
 	proxies := make([]map[string]any, 0, len(group))
 	for _, candidate := range group {
@@ -272,8 +329,6 @@ func (r *MihomoDelayRunner) startInstance(key string, group []mihomoProxyCandida
 			continue
 		}
 		inst.loaded = loaded
-		r.nextGen++
-		inst.generation = r.nextGen
 		return inst, nil
 	}
 	return nil, lastErr
@@ -354,32 +409,37 @@ func (r *MihomoDelayRunner) recordStartFailure(key string) {
 // instance, probing only the nodes the controller actually loaded and marking
 // the rest isolated (T8).
 func (r *MihomoDelayRunner) probeInstance(inst *mihomoInstance, group []mihomoProxyCandidate, timeout time.Duration) map[int]ProbeResult {
-	baseURL := inst.baseURL
-	secret := inst.secret
-	loaded := inst.loaded
-
 	results := make(map[int]ProbeResult, len(group))
 	for _, candidate := range group {
-		if _, ok := loaded[candidate.nodeID]; !ok {
+		if _, ok := inst.loaded[candidate.nodeID]; !ok {
 			results[candidate.nodeID] = ProbeResult{Status: "unknown", Message: mihomoIsolatedMessage}
 		}
 	}
-	if len(loaded) == 0 {
-		return results
-	}
+	r.probeProxiesConcurrently(results, inst.loaded, inst.baseURL, inst.secret, timeout)
+	return results
+}
 
+// probeProxiesConcurrently probes each nodeID->proxyName pair against the
+// controller at baseURL, bounded by r.concurrency, and writes each outcome into
+// results. The caller owns results, so pre-seeded entries (e.g. isolated nodes
+// the controller never loaded) are preserved. Shared by the persistent
+// (probeInstance) and ephemeral (runCandidateBatch) paths.
+func (r *MihomoDelayRunner) probeProxiesConcurrently(results map[int]ProbeResult, proxyNames map[int]string, baseURL, secret string, timeout time.Duration) {
+	if len(proxyNames) == 0 {
+		return
+	}
 	client := mihomoControllerClient(secret, timeout+2*time.Second)
 	concurrency := r.concurrency
 	if concurrency <= 0 {
 		concurrency = 1
 	}
-	if concurrency > len(loaded) {
-		concurrency = len(loaded)
+	if concurrency > len(proxyNames) {
+		concurrency = len(proxyNames)
 	}
 	sem := make(chan struct{}, concurrency)
 	var mu sync.Mutex
 	var wg sync.WaitGroup
-	for nodeID, proxyName := range loaded {
+	for nodeID, proxyName := range proxyNames {
 		wg.Add(1)
 		go func(nodeID int, proxyName string) {
 			defer wg.Done()
@@ -392,7 +452,6 @@ func (r *MihomoDelayRunner) probeInstance(inst *mihomoInstance, group []mihomoPr
 		}(nodeID, proxyName)
 	}
 	wg.Wait()
-	return results
 }
 
 // newMihomoSecret generates a random bearer token for the external controller
@@ -436,43 +495,71 @@ func mihomoControllerClient(secret string, timeout time.Duration) *http.Client {
 // loaded proxies is treated as not-ready so the first post-restart round does
 // not come back mass-unknown.
 func waitMihomoReady(baseURL, secret string, group []mihomoProxyCandidate, procExited <-chan struct{}, timeout time.Duration) (map[int]string, error) {
-	if timeout <= 0 {
-		timeout = 8 * time.Second
-	}
 	want := make(map[string]int, len(group))
 	for _, candidate := range group {
 		want[candidate.name] = candidate.nodeID
 	}
 	client := mihomoControllerClient(secret, 500*time.Millisecond)
+	var loaded map[int]string
+	err := pollMihomo(
+		procExited,
+		timeout,
+		errors.New("mihomo process exited before becoming ready"),
+		"mihomo controller not ready",
+		func() (bool, error) {
+			present, err := fetchMihomoProxies(client, baseURL)
+			if err != nil {
+				return false, err
+			}
+			current := map[int]string{}
+			for name, nodeID := range want {
+				if _, ok := present[name]; ok {
+					current[nodeID] = name
+				}
+			}
+			if len(current) == 0 {
+				return false, errors.New("mihomo controller is up but loaded none of the requested proxies")
+			}
+			loaded = current
+			return true, nil
+		},
+	)
+	if err != nil {
+		return nil, err
+	}
+	return loaded, nil
+}
+
+// pollMihomo runs check on a 100ms cadence until it reports done, the deadline
+// elapses, or the process exits. check returns (done, err): a non-nil err is
+// kept as the last error for the timeout message; done==true ends the poll
+// successfully. exitErr and timeoutMsg let each caller keep its own wording
+// (controller HTTP-up vs proxies-loaded readiness). Shared by
+// waitMihomoController and waitMihomoReady.
+func pollMihomo(procExited <-chan struct{}, timeout time.Duration, exitErr error, timeoutMsg string, check func() (bool, error)) error {
+	if timeout <= 0 {
+		timeout = 8 * time.Second
+	}
 	deadline := time.Now().Add(timeout)
 	var lastErr error
 	for time.Now().Before(deadline) {
 		if procExited != nil {
 			select {
 			case <-procExited:
-				return nil, errors.New("mihomo process exited before becoming ready")
+				return exitErr
 			default:
 			}
 		}
-		present, err := fetchMihomoProxies(client, baseURL)
+		done, err := check()
 		if err != nil {
 			lastErr = err
-		} else {
-			loaded := map[int]string{}
-			for name, nodeID := range want {
-				if _, ok := present[name]; ok {
-					loaded[nodeID] = name
-				}
-			}
-			if len(loaded) > 0 {
-				return loaded, nil
-			}
-			lastErr = errors.New("mihomo controller is up but loaded none of the requested proxies")
+		} else if done {
+			return nil
 		}
 		if procExited != nil {
 			select {
 			case <-procExited:
-				return nil, errors.New("mihomo process exited before becoming ready")
+				return exitErr
 			case <-time.After(100 * time.Millisecond):
 			}
 		} else {
@@ -480,9 +567,9 @@ func waitMihomoReady(baseURL, secret string, group []mihomoProxyCandidate, procE
 		}
 	}
 	if lastErr != nil {
-		return nil, fmt.Errorf("mihomo controller not ready: %w", lastErr)
+		return fmt.Errorf("%s: %w", timeoutMsg, lastErr)
 	}
-	return nil, errors.New("mihomo controller not ready")
+	return errors.New(timeoutMsg)
 }
 
 // fetchMihomoProxies returns the set of proxy names the controller currently
@@ -759,30 +846,7 @@ func (r *MihomoDelayRunner) runCandidateBatch(candidates []mihomoProxyCandidate,
 		return nil, err
 	}
 
-	client := mihomoControllerClient(secret, timeout+2*time.Second)
-	concurrency := r.concurrency
-	if concurrency <= 0 {
-		concurrency = 1
-	}
-	if concurrency > len(proxyNames) {
-		concurrency = len(proxyNames)
-	}
-	sem := make(chan struct{}, concurrency)
-	var mu sync.Mutex
-	var wg sync.WaitGroup
-	for nodeID, proxyName := range proxyNames {
-		wg.Add(1)
-		go func(nodeID int, proxyName string) {
-			defer wg.Done()
-			sem <- struct{}{}
-			result := probeMihomoDelayWithWarmup(client, baseURL, proxyName, r.delayURLs, timeout, r.warmup)
-			<-sem
-			mu.Lock()
-			results[nodeID] = result
-			mu.Unlock()
-		}(nodeID, proxyName)
-	}
-	wg.Wait()
+	r.probeProxiesConcurrently(results, proxyNames, baseURL, secret, timeout)
 	return results, nil
 }
 
@@ -904,44 +968,24 @@ func isSafeMihomoNameserver(entry string) bool {
 }
 
 func waitMihomoController(baseURL string, secret string, procExited <-chan struct{}, timeout time.Duration) error {
-	if timeout <= 0 {
-		timeout = 8 * time.Second
-	}
-	deadline := time.Now().Add(timeout)
 	client := mihomoControllerClient(secret, 500*time.Millisecond)
-	var lastErr error
-	for time.Now().Before(deadline) {
-		if procExited != nil {
-			select {
-			case <-procExited:
-				return errors.New("mihomo process exited before the controller became ready")
-			default:
+	return pollMihomo(
+		procExited,
+		timeout,
+		errors.New("mihomo process exited before the controller became ready"),
+		"mihomo controller did not start",
+		func() (bool, error) {
+			resp, err := client.Get(baseURL + "/proxies")
+			if err != nil {
+				return false, err
 			}
-		}
-		resp, err := client.Get(baseURL + "/proxies")
-		if err == nil {
 			_ = resp.Body.Close()
 			if resp.StatusCode >= 200 && resp.StatusCode < 500 {
-				return nil
+				return true, nil
 			}
-			lastErr = fmt.Errorf("mihomo controller returned %s", resp.Status)
-		} else {
-			lastErr = err
-		}
-		if procExited != nil {
-			select {
-			case <-procExited:
-				return errors.New("mihomo process exited before the controller became ready")
-			case <-time.After(100 * time.Millisecond):
-			}
-		} else {
-			time.Sleep(100 * time.Millisecond)
-		}
-	}
-	if lastErr != nil {
-		return fmt.Errorf("mihomo controller did not start: %w", lastErr)
-	}
-	return errors.New("mihomo controller did not start")
+			return false, fmt.Errorf("mihomo controller returned %s", resp.Status)
+		},
+	)
 }
 
 func probeMihomoDelayWithWarmup(

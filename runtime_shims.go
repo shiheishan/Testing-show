@@ -15,6 +15,10 @@ var (
 	osWriteFile        = os.WriteFile
 	osRemoveAll        = os.RemoveAll
 	contextBackground  = context.Background
+	// lookupHostIPs resolves a hostname to its IP addresses. It is a package
+	// var so the SSRF guard's hostname check can be exercised deterministically
+	// in tests (rebind names, metadata fronts) without real DNS.
+	lookupHostIPs = net.LookupIP
 )
 
 func isTimeoutError(err error) bool {
