@@ -28,8 +28,8 @@ if [ "$TARGET_OS" = "windows" ]; then
   BIN_NAME="$APP_NAME.exe"
 fi
 
-if [ ! -d node_modules ]; then
-  echo "node_modules is missing. Run npm ci before packaging." >&2
+if [ ! -d web/node_modules ]; then
+  echo "web/node_modules is missing. Run 'npm --prefix web ci' before packaging." >&2
   exit 1
 fi
 
@@ -42,7 +42,9 @@ rm -rf "$PACKAGE_DIR"
 rm -f "$ARCHIVE" "$ARCHIVE.sha256"
 mkdir -p "$PACKAGE_DIR" "$OUT_DIR"
 
-npm run build
+# Frontend lives in web/; its vite config writes the build to the repo-root
+# dist/ (outDir ../dist), so the cp below and the Go server path are unchanged.
+( cd web && npm run build )
 
 CGO_ENABLED=0 GOOS="$TARGET_OS" GOARCH="$TARGET_ARCH" go build \
   -trimpath \

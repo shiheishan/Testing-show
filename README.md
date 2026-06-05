@@ -73,20 +73,22 @@ subscriptions:
 
 ## 开发
 
-前端开发：
+前端代码在 `web/` 子目录（Vite + React）。前端开发：
 
 ```bash
+cd web
+npm install   # 首次
 npm run dev
 ```
 
 生产构建并启动 Go 后端：
 
 ```bash
-npm run build
+( cd web && npm run build )   # 产物写到仓库根目录的 dist/
 go run .
 ```
 
-默认监听 `http://0.0.0.0:8080`。Go 后端会托管 `dist/` 里的 React 构建产物。
+默认监听 `http://0.0.0.0:8080`。Go 后端会托管 `dist/` 里的 React 构建产物（`web/vite.config.ts` 把 `outDir` 指回根目录 `dist/`，所以后端的 `os.DirFS("dist")` 路径不变）。
 
 ## 下载部署
 
@@ -117,15 +119,15 @@ cp subscriptions.yaml.example subscriptions.yaml
 本地打包当前机器平台：
 
 ```bash
-npm ci
-npm run package:release
+npm --prefix web ci
+scripts/package-release.sh
 ```
 
 交叉打包指定平台：
 
 ```bash
-npm ci
-TARGET_OS=linux TARGET_ARCH=amd64 npm run package:release
+npm --prefix web ci
+TARGET_OS=linux TARGET_ARCH=amd64 scripts/package-release.sh
 ```
 
 产物会写到 `release/`，包括 `.tar.gz` 和对应的 `.sha256`。
@@ -150,11 +152,11 @@ git push origin v0.2.4
 ## 测试
 
 ```bash
-npm run build
-GOCACHE="$PWD/.gocache" go test .
+( cd web && npm run build )
+GOCACHE="$PWD/.gocache" go test ./...
 ```
 
-不要用 `go test ./...`，当前项目的 `node_modules` 里有第三方 Go 示例包，会被一起扫描。
+前端（含 `node_modules`，里面有第三方 Go 示例包）已隔离在 `web/` 子目录，`web/go.mod` 把它变成嵌套模块，Go 工具会跳过整个 `web/` 子树，所以 `go test ./...` 可以正常使用。
 
 发布前建议跑一次密钥扫描：
 

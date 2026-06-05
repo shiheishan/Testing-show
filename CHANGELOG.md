@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.2.10] - 2026-06-05
+
+### Changed
+
+- The frontend (`src/`, `package.json`, Vite/TS/ESLint config, `node_modules`) now lives in a `web/` subdirectory, with a nested `web/go.mod` so the Go tool skips the whole subtree. `go test ./...` works again (a stray Go file shipped inside `node_modules/flatted` previously polluted the module walk, forcing `go test .`). Vite writes its build to the repo-root `dist/` (`outDir: ../dist`), so the Go server's `os.DirFS("dist")` and the release packaging are unchanged. Frontend commands now run from `web/` (`cd web && npm run dev|build|lint`).
+
+### Internal
+
+- `src/App.tsx` was split from a single 1474-line file into focused modules (`web/src/types.ts`, `web/src/constants.ts`, `web/src/lib/*`, `web/src/components/*`); the page container is now ~323 lines. No behavior change.
+
 ## [0.2.9] - 2026-06-05
 
 ### Security
